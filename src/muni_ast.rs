@@ -1,0 +1,404 @@
+use crate::{muni_ir, errors};
+use rand;
+
+
+#[derive(Debug)]
+pub struct Program {
+    pub modules: Vec<Module>,
+}
+
+#[derive(Debug)]
+pub struct Module {
+    pub types: Vec<TypeDef>,
+    pub functions: Vec<Function>,
+    pub globals: Vec<Global>,
+}
+
+#[derive(Debug)]
+pub struct Function {
+    pub name: String,
+    pub params: Vec<(String, Type)>,
+    pub return_type: Option<Type>,
+    pub body: Vec<TypedNode>,
+    pub export: bool,
+}
+
+#[derive(Debug)]
+pub struct Global {
+    pub name: String,
+    pub ty: Type,
+    pub mutable: bool,
+    pub init: TypedNode,
+    pub export: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum Type {
+    I32,
+    I64,
+    F32,
+    F64,
+    Integer,
+    Float,
+}
+
+#[derive(Debug)]
+pub enum TypeDef {
+    Alias { name: String, ty: Type },
+}
+
+#[derive(Debug, Clone)]
+pub enum TypedNode {
+    Statement { statement: Statement },
+    Expression { expression: Expression, result_type: Type },
+}
+
+
+#[derive(Debug, Clone)]
+pub enum Statement {
+    If { condition: Box<TypedNode>, then_body: Vec<TypedNode>, else_body: Vec<TypedNode> },
+    Return { value: Option<Box<TypedNode>> },
+    Expression { expression: Expression },
+    VariableDeclaration { name: String, ty: Type, init: Option<Box<TypedNode>> },
+    Block { body: Vec<TypedNode> },
+    Loop { body: Vec<TypedNode> },
+}
+
+#[derive(Debug, Clone)]
+pub enum Expression {
+    BinaryOp { op: BinOp, left: Box<TypedNode>, right: Box<TypedNode> },
+    Literal { value: Literal },
+    Identifier { name: String },
+    Call { function: String, args: Vec<TypedNode> },
+}
+
+#[derive(Debug, Clone)]
+pub enum BinOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Gt,
+    Lt,
+    Ge,
+    Le,
+    Eq,
+    Assign,
+}
+
+#[derive(Debug, Clone)]
+pub enum Literal {
+    Integer(i64),
+    Float(f64),
+}
+
+
+
+
+
+impl Program {
+    pub fn lower(&self) -> Result<Vec<muni_ir::Module>, errors::CompileError> {
+        let mut ir_modules = Vec::new();
+        for module in &self.modules {
+            let mut ir_functions = Vec::new();
+            for function in &module.functions {
+                let ir_function = muni_ir::Function {
+                    name: function.name.clone(),
+                    params: function.params.iter().map(|(name, ty)| (name.clone(), self.lower_type(ty))).collect(),
+                    return_type: function.return_type.as_ref().map(|ty| self.lower_type(ty)),
+                    body: self.lower_instructions(&function.body)?,
+                    export: function.export,
+                    locals: function.locals().iter().map(|(name, ty)| (name.clone(), self.lower_type(ty))).collect(),
+            
+                };
+                ir_functions.push(ir_function);
+            }
+            let mut ir_globals = Vec::new();
+            for global in &module.globals {
+                ir_globals.push(muni_ir::Global {
+                    name: global.name.clone(),
+                    global_type: self.lower_type(&global.ty),
+                    mutable: global.mutable,
+                    init: vec![self.lower_instruction(&global.init)?],
+                    export: global.export,
+                });
+            }
+            ir_modules.push(muni_ir::Module {
+                functions: ir_functions,
+                globals: ir_globals,
+            });
+            for type_def in &module.types {
+                match type_def {
+                    TypeDef::Alias { name: _, ty: _ } => {
+                        // TODO handle type aliases
+                    },
+                }
+            }
+        }
+        Ok(ir_modules)
+    }
+
+    fn lower_type(&self, ty: &Type) -> muni_ir::Type {
+        match ty {
+            Type::I32 => muni_ir::Type::I32,
+            Type::I64 => muni_ir::Type::I64,
+            Type::F32 => muni_ir::Type::F32,
+            Type::F64 => muni_ir::Type::F64,
+            Type::Integer => muni_ir::Type::I32, // TODO: distinguish between different integer types
+            Type::Float => muni_ir::Type::F32, // TODO: distinguish between different
+        }
+    }
+
+    fn lower_instructions(&self, instructions: &[TypedNode]) -> Result<Vec<muni_ir::TypedInstruction>, errors::CompileError> {
+        let mut ir_instructions = Vec::new();
+        for instr in instructions {
+            ir_instructions.push(self.lower_instruction(instr)?);
+        }
+        Ok(ir_instructions)
+    }
+
+    fn lower_instruction(&self, instruction: &TypedNode ) -> Result<muni_ir::TypedInstruction, errors::CompileError> {
+        let instr = match instruction {
+            TypedNode::Statement { statement } => match statement {
+                Statement::If { condition, then_body, else_body } => {
+                    let condition = Box::new(self.lower_instruction(condition)?);
+                    let then_body = self.lower_instructions(then_body)?;
+                    let else_body = self.lower_instructions(else_body)?;
+                    muni_ir::Instruction::If { condition, then_body, else_body }
+                },
+                Statement::Return { value } => {
+                    let value: Option<Box<muni_ir::TypedInstruction>> = value.as_ref().and_then(|v| self.lower_instruction(v).map(Box::new).ok());
+                    muni_ir::Instruction::Return { value }
+                },
+                Statement::Expression { expression } => {
+                    self.lower_expression(expression)?
+                },
+                Statement::VariableDeclaration { name, ty, init } => {
+                    let init = init.as_ref().and_then(|init| self.lower_instruction(init).map(Box::new).ok());
+                    let default = Box::new(muni_ir::TypedInstruction {
+                        instruction: muni_ir::Instruction::Const { value: match ty {
+                            Type::I32 => muni_ir::Value::I32(0),
+                            Type::I64 => muni_ir::Value::I64(0),
+                            Type::F32 => muni_ir::Value::F32(0.0),
+                            Type::F64 => muni_ir::Value::F64(0.0),
+                            Type::Integer => muni_ir::Value::I32(0),
+                            Type::Float => muni_ir::Value::F32(0.0),
+                        } },
+                        result_type: Some(self.lower_type(ty)),
+                    });
+                    muni_ir::Instruction::VarSet { name: name.clone(), value: init.unwrap_or(default) }
+                },
+                Statement::Block { body } => {
+                    let body = self.lower_instructions(body)?;
+                    muni_ir::Instruction::Block { label: format!("block_{}", rand::random::<u64>()), body }
+                },
+                Statement::Loop { body } => {
+                    let body = self.lower_instructions(body)?;
+                    
+                    let loop_label = format!("loop_{}", rand::random::<u64>());
+
+                    muni_ir::Instruction::Block { label: loop_label.clone(), body: vec![
+                        muni_ir::TypedInstruction {
+                            instruction: muni_ir::Instruction::Loop { label: loop_label.clone(), body: {
+                                let mut instrs: Vec<muni_ir::TypedInstruction> = body;
+                                instrs.push(muni_ir::TypedInstruction {
+                                    instruction: muni_ir::Instruction::Break { value: 0 },
+                                    result_type: None,
+                                });
+                                instrs
+                            } },
+                            result_type: None,
+                        },
+                    ] }
+
+                }
+            },
+            TypedNode::Expression { expression, result_type: _ } => {
+                self.lower_expression(expression)?
+            },
+        };
+        Ok(muni_ir::TypedInstruction {
+            instruction: instr,
+            result_type: match instruction.result_type() {
+                Some(ty) => Some(self.lower_type(&ty)),
+                None => None,
+            },
+        })
+    
+    }
+
+    fn lower_expression(&self, expression: &Expression) -> Result<muni_ir::Instruction, errors::CompileError> {
+        match expression {
+            Expression::BinaryOp { op, left, right } => {
+                let lowered_left = Box::new(self.lower_instruction(left)?);
+                let lowered_right = Box::new(self.lower_instruction(right)?);
+
+                Ok(match op {
+                    BinOp::Add => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Add, left: lowered_left, right: lowered_right },
+                    BinOp::Sub => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Sub, left: lowered_left, right: lowered_right },
+                    BinOp::Mul => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Mul, left: lowered_left, right: lowered_right },
+                    BinOp::Div => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Div, left: lowered_left, right: lowered_right },
+                    BinOp::Gt => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Gt, left: lowered_left, right: lowered_right },
+                    BinOp::Lt => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Lt, left: lowered_left, right: lowered_right },
+                    BinOp::Ge => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Ge, left: lowered_left, right: lowered_right },
+                    BinOp::Le => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Le, left: lowered_left, right: lowered_right },
+                    BinOp::Eq => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Eq, left: lowered_left, right: lowered_right },
+                    BinOp::Assign => {
+                        let name = match left.as_ref() {
+                            TypedNode::Expression { expression: Expression::Identifier { name }, result_type: _ } => name.clone(),
+                            _ => return Err(errors::CompileError::IRLoweringError("Left-hand side of assignment must be an identifier".to_string())),
+                        };
+                        muni_ir::Instruction::VarSet { name: name, value: lowered_right }
+                    }
+                })
+            },
+            Expression::Literal { value } => Ok(muni_ir::Instruction::Const { value: match value {
+                Literal::Integer(i) => muni_ir::Value::I32(*i as i32), // TODO: handle different integer types
+                Literal::Float(f) => muni_ir::Value::F32(*f as f32), // TODO: handle different float types
+            } } ),
+            Expression::Identifier { name } => {
+
+                Ok(muni_ir::Instruction::VarGet { name: name.clone() })
+            },
+            Expression::Call { function, args } => {
+                let lowered_args = args.iter().map(|arg| self.lower_instruction(arg)).collect::<Result<Vec<_>, _>>()?;
+                Ok(muni_ir::Instruction::Call { function_name: function.clone(), args: lowered_args })
+            },
+        }
+    }
+
+    #[allow(unused)]
+    pub fn display(&self) {
+        for module in &self.modules {
+            println!("Module:");
+            for type_def in &module.types {
+                match type_def {
+                    TypeDef::Alias { name, ty } => {
+                        println!("  Type alias: {} = {:?}", name, ty);
+                    },
+                }
+            }
+            for global in &module.globals {
+                println!("  Global: {}: {:?} = {:?}", global.name, global.ty, global.init);
+            }
+            for function in &module.functions {
+                println!("  Function: {}({:?}) -> {:?} {{", function.name, function.params, function.return_type);
+                for instr in &function.body {
+                    self.display_instruction(instr, 4);
+                }
+                println!("  }}");
+            }
+        }
+    }
+
+    pub fn display_instruction(&self, instruction: &TypedNode, indent: usize) {
+        let indent_str = " ".repeat(indent);
+        match instruction {
+            TypedNode::Statement { statement } => match statement {
+                Statement::If { condition, then_body, else_body } => {
+                    println!("{}If:", indent_str);
+                    self.display_instruction(condition, indent + 2);
+                    println!("{}Then:", indent_str);
+                    for instr in then_body {
+                        self.display_instruction(instr, indent + 4);
+                    }
+                    println!("{}Else:", indent_str);
+                    for instr in else_body {
+                        self.display_instruction(instr, indent + 4);
+                    }
+                },
+                Statement::Return { value } => {
+                    println!("{}Return:", indent_str);
+                    if let Some(value) = value {
+                        self.display_instruction(value, indent + 2);
+                    }
+                },
+                Statement::Expression { expression } => {
+                    println!("{}Expression: {:?}", indent_str, expression);
+                },
+                Statement::VariableDeclaration { name, ty, init } => {
+                    println!("{}Variable declaration: {}: {:?}", indent_str, name, ty);
+                    if let Some(init) = init {
+                        println!("{}Initializer:", indent_str);
+                        self.display_instruction(init, indent + 2);
+                    }
+                },
+                Statement::Block { body } => {
+                    println!("{}Block:", indent_str);
+                    for instr in body {
+                        self.display_instruction(instr, indent + 2);
+                    }
+                },
+                Statement::Loop { body } => {
+                    println!("{}Loop:", indent_str);
+                    for instr in body {
+                        self.display_instruction(instr, indent + 2);
+                    }
+                },
+            },
+            TypedNode::Expression { expression, result_type } => {
+                println!("{}Expression: {:?} (type: {:?})", indent_str, expression, result_type);
+            },
+        }
+    }
+}
+
+
+
+impl Function {
+
+
+    
+    pub fn locals(&self) -> Vec<(String, Type)> {
+        let mut locals = Vec::new();
+        for instr in &self.body {
+            self.collect_locals(instr, &mut locals);
+        }
+        locals
+    }
+
+    pub fn collect_locals(&self, node: &TypedNode, locals: &mut Vec<(String, Type)>) {
+        match node {
+            TypedNode::Statement { statement } => match statement {
+                Statement::If { condition, then_body, else_body } => {
+                    self.collect_locals(condition, locals);
+                    for instr in then_body {
+                        self.collect_locals(instr, locals);
+                    }
+                    for instr in else_body {
+                        self.collect_locals(instr, locals);
+                    }
+                },
+                Statement::Return { value: _ } => {},
+                Statement::Expression { expression: _ } => {},
+                Statement::VariableDeclaration { name, ty, init } => {
+                    locals.push((name.clone(), ty.clone()));
+                    if let Some(init) = init {
+                        self.collect_locals(init, locals);
+                    }
+                },
+                Statement::Block { body } => {
+                    for instr in body {
+                        self.collect_locals(instr, locals);
+                    }
+                },
+                Statement::Loop { body } => {
+                    for instr in body {
+                        self.collect_locals(instr, locals);
+                    }
+                }
+            },
+            TypedNode::Expression { expression: _, result_type: _ } => {},
+        }
+    }
+}
+
+
+impl TypedNode {
+    pub fn result_type(&self) -> Option<Type> {
+        match self {
+            TypedNode::Statement { statement: _ } => None,
+            TypedNode::Expression { expression: _, result_type } => Some(result_type.clone()),
+        }
+    }
+}
