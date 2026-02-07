@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use crate::{errors, muni_ast};
 use crate::lexer::{Token, TokenKind, Operator, Keyword, Symbol};
 
@@ -7,9 +5,6 @@ use crate::lexer::{Token, TokenKind, Operator, Keyword, Symbol};
 pub struct Parser {
     tokens: Vec<Token>,
     position: usize,
-    module_table: HashMap<String, u32>,
-    current_module_index: u32,
-    current_function_index: u32,
 }
 
 impl Parser {
@@ -23,7 +18,7 @@ impl Parser {
                 break;
             }
         }
-        Parser { tokens, position: 0, module_table: HashMap::new(), current_module_index: 0, current_function_index: 0 }
+        Parser { tokens, position: 0 }
     }
     pub fn nth_token(&self, n: usize) -> &Token {
         &self.tokens[self.position + n]
