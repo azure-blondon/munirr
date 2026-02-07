@@ -13,45 +13,6 @@ use wasm_ir::Emittable;
 
 
 
-fn generate_wasm(input_path: &str, output_path: &str) -> Result<(), errors::CompileError> {
-    
-    let source = std::fs::read_to_string(input_path)
-        .map_err(|e| errors::CompileError::LexerError(format!("Failed to read input file: {}", e)))?;
-    let lexer = lexer::Lexer::new(source);
-    let mut parser = parser::Parser::new(lexer);
-    // parser.display_tokens();
-    let ast = parser.parse_program();
-    if ast.is_err() {
-        eprintln!("Parsing error: {}", ast.err().unwrap());
-        return Err(errors::CompileError::ParserError("parsing error".to_string()));
-    }
-    let ast = ast.unwrap();
-
-    // println!("AST:");
-    // ast.display();
-
-    let modules = ast.lower()?;
-
-    let muni_ir = modules.get(0).unwrap();
-    
-    // println!("Muni IR:");
-    // muni_ir.display();
-    
-    let mut out = Vec::new();
-
-    let wasm_ir = muni_ir.lower();
-    // println!("Wasm IR:");
-    // println!("{}", wasm_ir.display());
-    wasm_ir.emit(&mut out);
-
-    std::fs::write(output_path, out)
-        .map_err(|e| errors::CompileError::WasmLoweringError(format!("Failed to write output file: {}", e)))?;
-
-    Ok(())
-}
-
-
-
 pub fn compile_muni_to_wasm(muni_code: String) -> Result<Vec<u8>, errors::CompileError> {
     let lexer = lexer::Lexer::new(muni_code);
     let mut parser = parser::Parser::new(lexer);
@@ -67,12 +28,7 @@ pub fn compile_muni_to_wasm(muni_code: String) -> Result<Vec<u8>, errors::Compil
 
 
 
-
-
-
-
 fn main() -> anyhow::Result<()> {
-    // find arguments passed to the program
     let args: Vec<String> = std::env::args().collect();
     if args.len() < 3 {
         eprintln!("Usage: {} <input_file> <output_file>", args[0]);
@@ -80,7 +36,9 @@ fn main() -> anyhow::Result<()> {
     }
     let input_path = &args[1];
     let output_path = &args[2];
-    generate_wasm(input_path, output_path)?;
+    let muni_code = std::fs::read_to_string(input_path)?;
+    let wasm_bytes = compile_muni_to_wasm(muni_code)?;
+    std::fs::write(output_path, wasm_bytes)?;
 
     let engine = Engine::default();
     let module = wasmtime::Module::from_file(&engine, output_path)?;
