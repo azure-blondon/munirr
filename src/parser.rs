@@ -288,6 +288,8 @@ impl Parser {
                 TokenKind::Operator(Operator::Div) => muni_ast::BinOp::Div,
                 TokenKind::Operator(Operator::Gt) => muni_ast::BinOp::Gt,
                 TokenKind::Operator(Operator::Lt) => muni_ast::BinOp::Lt,
+                TokenKind::Operator(Operator::Ge) => muni_ast::BinOp::Ge,
+                TokenKind::Operator(Operator::Le) => muni_ast::BinOp::Le,
                 TokenKind::Operator(Operator::Eq) => muni_ast::BinOp::Eq,
                 TokenKind::Operator(Operator::Assign) => muni_ast::BinOp::Assign,
                 _ => return Err(errors::CompileError::ParserError("Unknown operator".to_string())),
