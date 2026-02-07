@@ -176,8 +176,8 @@ impl Module {
             },
             Instruction::VarGet { name } => {
                 if let Some(func_idx) = current_function_index {
-                    if self.functions[func_idx].params.iter().any(|(param_name, _)| param_name == name) || self.functions[func_idx].locals.iter().any(|(local_name, _)| local_name == name) {
-                        return vec![wasm_ir::Instruction::LocalGet { id: self.get_local_index(current_function_index, name) }];
+                    if self.get_locals_names(func_idx).iter().any(|local_name| local_name == name) {
+                        return vec![wasm_ir::Instruction::LocalGet { id: self.get_local_index(func_idx, name) }];
                     }
                 }
 
@@ -187,7 +187,7 @@ impl Module {
                 if let Some(func_idx) = current_function_index {
                     if self.functions[func_idx].params.iter().any(|(param_name, _)| param_name == name) || self.functions[func_idx].locals.iter().any(|(local_name, _)| local_name == name) {
                         let mut instrs = self.lower_instruction(value, function_indices, current_function_index, label_stack, next_label_id);
-                        instrs.push(wasm_ir::Instruction::LocalSet { id: self.get_local_index(current_function_index, name) });
+                        instrs.push(wasm_ir::Instruction::LocalSet { id: self.get_local_index(func_idx, name) });
                         return instrs;
                     }
                 }
@@ -285,34 +285,31 @@ impl Module {
         }
     }
 
-    fn get_local_index(&self, current_function_index: Option<usize>, name: &str) -> u32 {
+    fn get_local_index(&self, function_index: usize, name: &str) -> u32 {
         let mut index = 0;
-        if let Some(func_idx) = current_function_index {
-            for (param_name, _) in &self.functions[func_idx].params {
-                if param_name == name {
-                    return index;
-                }
-                index += 1;
+        for (param_name, _) in &self.functions[function_index].params {
+            if param_name == name {
+                return index;
             }
-            for (local_name, _) in &self.functions[func_idx].locals {
-                if local_name == name {
-                    return index;
-                }
-                index += 1;
-            }
+            index += 1;
         }
+        for (local_name, _) in &self.functions[function_index].locals {
+            if local_name == name {
+                return index;
+            }
+            index += 1;
+        }
+        
         panic!("Local not found: {}", name);
     }
 
-    fn get_locals_names(&self, current_function_index: Option<usize>) -> Vec<String> {
+    fn get_locals_names(&self, function_index: usize) -> Vec<String> {
         let mut names = Vec::new();
-        if let Some(func_idx) = current_function_index {
-            for (param_name, _) in &self.functions[func_idx].params {
-                names.push(param_name.clone());
-            }
-            for (local_name, _) in &self.functions[func_idx].locals {
-                names.push(local_name.clone());
-            }
+        for (param_name, _) in &self.functions[function_index].params {
+            names.push(param_name.clone());
+        }
+        for (local_name, _) in &self.functions[function_index].locals {
+            names.push(local_name.clone());
         }
         names
     }
