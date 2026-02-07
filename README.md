@@ -33,6 +33,7 @@ nice to have:
 ## to-do
 - [x] start the readme
 - [x] compile a first program (yay!)
-- [ ] rewrite lexer and parser
+- [x] clean up lexer
+- [ ] clean up parser
 - [ ] write tests
 - [ ] add loops
