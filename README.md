@@ -23,6 +23,7 @@ minimal stdlib:
 - [ ] println function
 
 nice to have:
+- [ ] boolean literals
 - [ ] char literals
 
 

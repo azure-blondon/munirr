@@ -85,47 +85,77 @@ pub struct Lexer {
     position: Position,
 }
 
+const SINGLE_CHAR_TOKENS: &[(&str, TokenKind)] = &[
+    ("+", TokenKind::Operator(Operator::Plus)),
+    ("-", TokenKind::Operator(Operator::Minus)),
+    ("*", TokenKind::Operator(Operator::Mul)),
+    ("/", TokenKind::Operator(Operator::Div)),
+    ("(", TokenKind::Symbol(Symbol::LParen)),
+    (")", TokenKind::Symbol(Symbol::RParen)),
+    ("{", TokenKind::Symbol(Symbol::LBrace)),
+    ("}", TokenKind::Symbol(Symbol::RBrace)),
+    (",", TokenKind::Symbol(Symbol::Comma)),
+    (";", TokenKind::Symbol(Symbol::Semicolon)),
+];
+
+const KEYWORDS: &[(&str, TokenKind)] = &[
+    ("if", TokenKind::Keyword(Keyword::If)),
+    ("else", TokenKind::Keyword(Keyword::Else)),
+    ("return", TokenKind::Keyword(Keyword::Return)),
+    ("export", TokenKind::Keyword(Keyword::Export)),
+    ("module", TokenKind::Keyword(Keyword::Module)),
+    ("global", TokenKind::Keyword(Keyword::Global)),
+    ("loop", TokenKind::Keyword(Keyword::Loop)),
+    ("break", TokenKind::Keyword(Keyword::Break)),
+];
+
+
 impl Lexer {
     pub fn new(input: String) -> Self {
         Lexer { input, position: Position::new() }
     }
 
+    fn is_at_end(&self) -> bool {
+        self.position.index >= self.input.len()
+    }
+
+    fn peek_char(&self) -> Option<char> {
+        self.peek_nth_char(0)
+    }
+
+    fn peek_nth_char(&self, n: usize) -> Option<char> {
+        if self.position.index + n >= self.input.len() {
+            None
+        } else {
+            self.input[self.position.index+n..].chars().next()
+        }
+    }
+
+    fn is_in<'a>(c: &str, tokens: &'a[(&str, TokenKind)]) -> Option<&'a TokenKind> {
+        tokens.iter().find(|(s, _)| s == &c).map(|(_, kind)| kind)
+    }
+
     pub fn next_token(&mut self) -> Token {
-        while self.position.index < self.input.len() && self.input[self.position.index..].chars().next().unwrap().is_whitespace() {
-            self.position.advance(self.input[self.position.index..].chars().next().unwrap());
+        while !self.is_at_end() && let Some(c) = self.peek_char() && c.is_whitespace() {
+            self.position.advance(c);
         }
 
-
-        if self.position.index >= self.input.len() {
+        if self.is_at_end() {
             return Token { kind: TokenKind::EoF, position: self.position.clone() };
         }
 
-
-        let character = self.input[self.position.index..].chars().next().unwrap();
-
-
+        let character: char = self.peek_char().unwrap();
 
         match character {
-            '+' => {
+            c if Lexer::is_in(&c.to_string(), SINGLE_CHAR_TOKENS).is_some() => {
+                let token_kind: &TokenKind = Lexer::is_in(&character.to_string(), SINGLE_CHAR_TOKENS).unwrap();
                 self.position.advance(character);
-                Token { kind: TokenKind::Operator(Operator::Plus), position: self.position.clone() }
-            },
-            '-' => {
-                self.position.advance(character);
-                Token { kind: TokenKind::Operator(Operator::Minus), position: self.position.clone() }
-            },
-            '*' => {
-                self.position.advance(character);
-                Token { kind: TokenKind::Operator(Operator::Mul), position: self.position.clone() }
-            },
-            '/' => {
-                self.position.advance(character);
-                Token { kind: TokenKind::Operator(Operator::Div), position: self.position.clone() }
+                Token { kind: token_kind.clone(), position: self.position.clone() }
             },
             '=' => {
                 let token_pos = self.position.clone();
                 self.position.advance(character);
-                if self.position.index < self.input.len() && self.input[self.position.index..].chars().next().unwrap() == '=' {
+                if self.peek_char() == Some('=') {
                     self.position.advance('=');
                     Token { kind: TokenKind::Operator(Operator::Eq), position: token_pos }
                 } else {
@@ -134,7 +164,7 @@ impl Lexer {
             },
             '!' => {
                 self.position.advance(character);
-                if self.position.index < self.input.len() && self.input[self.position.index..].chars().next().unwrap() == '=' {
+                if self.peek_char() == Some('=') {
                     self.position.advance('=');
                     Token { kind: TokenKind::Operator(Operator::Ne), position: self.position.clone() }
                 } else {
@@ -143,7 +173,7 @@ impl Lexer {
             },
             '<' => {
                 self.position.advance(character);
-                if self.position.index < self.input.len() && self.input[self.position.index..].chars().next().unwrap() == '=' {
+                if self.peek_char() == Some('=') {
                     self.position.advance('=');
                     Token { kind: TokenKind::Operator(Operator::Le), position: self.position.clone() }
                 } else {
@@ -152,55 +182,26 @@ impl Lexer {
             },
             '>' => {
                 self.position.advance(character);
-                if self.position.index < self.input.len() && self.input[self.position.index..].chars().next().unwrap() == '=' {
+                if self.peek_char() == Some('=') {
                     self.position.advance('=');
                     Token { kind: TokenKind::Operator(Operator::Ge), position: self.position.clone() }
                 } else {
                     Token { kind: TokenKind::Operator(Operator::Gt), position: self.position.clone() }
                 }
             },
-            '(' => {
-                self.position.advance(character);
-                Token { kind: TokenKind::Symbol(Symbol::LParen), position: self.position.clone() }
-            },
-            ')' => {
-                self.position.advance(character);
-                Token { kind: TokenKind::Symbol(Symbol::RParen), position: self.position.clone() }
-            },
-            '{' => {
-                self.position.advance(character);
-                Token { kind: TokenKind::Symbol(Symbol::LBrace), position: self.position.clone() }
-            },
-            '}' => {
-                self.position.advance(character);
-                Token { kind: TokenKind::Symbol(Symbol::RBrace), position: self.position.clone() }
-            },
-            ',' => {
-                self.position.advance(character);
-                Token { kind: TokenKind::Symbol(Symbol::Comma), position: self.position.clone() }
-            },
-            ';' => {
-                self.position.advance(character);
-                Token { kind: TokenKind::Symbol(Symbol::Semicolon), position: self.position.clone() }
-            },
             c if c.is_ascii_digit() => {
                 self.read_number()
             },
             c if c.is_ascii_alphabetic() || c == '_' => {
-                let start = self.position.index;
-                while self.position.index < self.input.len() && (self.input[self.position.index..].chars().next().unwrap().is_ascii_alphanumeric() || self.input[self.position.index..].chars().next().unwrap() == '_') {
-                    self.position.advance(self.input[self.position.index..].chars().next().unwrap());
+                let start: usize = self.position.index;
+                while !self.is_at_end() && (self.peek_char().unwrap().is_ascii_alphanumeric() || self.peek_char().unwrap() == '_') {
+                    self.position.advance(self.peek_char().unwrap());
                 }
-                let ident_str = &self.input[start..self.position.index];
-                let kind = match ident_str {
-                    "if" => TokenKind::Keyword(Keyword::If),
-                    "else" => TokenKind::Keyword(Keyword::Else),
-                    "return" => TokenKind::Keyword(Keyword::Return),
-                    "break" => TokenKind::Keyword(Keyword::Break),
-                    "export" => TokenKind::Keyword(Keyword::Export),
-                    "module" => TokenKind::Keyword(Keyword::Module),
-                    "global" => TokenKind::Keyword(Keyword::Global),
-                    "loop" => TokenKind::Keyword(Keyword::Loop),
+                let ident_str: &str = &self.input[start..self.position.index];
+                let kind: TokenKind = match ident_str {
+                    keyword if Lexer::is_in(keyword, KEYWORDS).is_some() => {
+                        Lexer::is_in(keyword, KEYWORDS).unwrap().clone()
+                    }
                     _ => TokenKind::Identifier(ident_str.to_string()),
                 };
                 Token { kind, position: self.position.clone() }
@@ -217,22 +218,25 @@ impl Lexer {
 
     fn read_number(&mut self) -> Token {
         let start = self.position.index;
-        while self.position.index < self.input.len() && self.input[self.position.index..].chars().next().unwrap().is_ascii_digit() {
-            self.position.advance(self.input[self.position.index..].chars().next().unwrap());
+
+        while !self.is_at_end() && self.peek_char().unwrap().is_ascii_digit() {
+            self.position.advance(self.peek_char().unwrap());
         }
-        
-        // Check for float
-        let kind = 
-        if self.position.index < self.input.len() && self.input[self.position.index..].chars().next().unwrap() == '.' {
-            self.position.advance('.');
-            while self.position.index < self.input.len() && self.input[self.position.index..].chars().next().unwrap().is_ascii_digit() {
-                self.position.advance(self.input[self.position.index..].chars().next().unwrap());
+
+        let kind = match self.peek_char() {
+            None => TokenKind::Error,
+            Some('.') => {
+                self.position.advance('.');
+                while !self.is_at_end() && self.peek_char().unwrap().is_ascii_digit() {
+                    self.position.advance(self.peek_char().unwrap());
+                }
+                let num_str: &str = &self.input[start..self.position.index];
+                TokenKind::Float(num_str.parse().unwrap())
             }
-            let num_str = &self.input[start..self.position.index];
-            TokenKind::Float(num_str.parse().unwrap())
-        } else {
-            let num_str = &self.input[start..self.position.index];
-            TokenKind::Integer(num_str.parse().unwrap())
+            Some(_) => {
+                let num_str = &self.input[start..self.position.index];
+                TokenKind::Integer(num_str.parse().unwrap())
+            }
         };
 
         Token { kind, position: self.position.clone() }
