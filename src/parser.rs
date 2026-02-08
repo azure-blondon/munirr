@@ -9,10 +9,10 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(mut lexer: crate::lexer::Lexer) -> Self {
-        let mut tokens = Vec::new();
+        let mut tokens: Vec<Token> = Vec::new();
         loop {
-            let token = lexer.next_token();
-            let is_eof = matches!(token.kind, TokenKind::EoF);
+            let token: Token = lexer.next_token();
+            let is_eof: bool = matches!(token.kind, TokenKind::EoF);
             tokens.push(token);
             if is_eof {
                 break;
@@ -20,18 +20,23 @@ impl Parser {
         }
         Parser { tokens, position: 0 }
     }
-    pub fn nth_token(&self, n: usize) -> &Token {
+    
+    fn is_at_end(&self) -> bool {
+        self.position >= self.tokens.len()
+    }
+
+    fn nth_token(&self, n: usize) -> &Token {
         &self.tokens[self.position + n]
     }
 
-    pub fn advance(&mut self) {
-        if self.position < self.tokens.len() - 1 {
+    fn advance(&mut self) {
+        if !self.is_at_end() {
             self.position += 1;
         }
     }
 
-    pub fn expect(&mut self, expected: &TokenKind) -> Result<(), errors::CompileError> {
-        let token = self.nth_token(0);
+    fn expect(&mut self, expected: &TokenKind) -> Result<(), errors::CompileError> {
+        let token: &Token = self.nth_token(0);
         if token.kind == *expected {
             self.advance();
             Ok(())
@@ -41,7 +46,7 @@ impl Parser {
     }
 
     pub fn parse_program(&mut self) -> Result<muni_ast::Program, errors::CompileError> {
-        let mut modules = Vec::new();
+        let mut modules: Vec<muni_ast::Module> = Vec::new();
         while self.nth_token(0).kind != TokenKind::EoF {
             modules.push(self.parse_module()?);
         }
@@ -49,39 +54,47 @@ impl Parser {
     }
 
     fn parse_module(&mut self) -> Result<muni_ast::Module, errors::CompileError> {
-        let mut functions = Vec::new();
-        let mut globals = Vec::new();
+        let mut functions: Vec<muni_ast::Function> = Vec::new();
+        let mut globals: Vec<muni_ast::Global> = Vec::new();
         while self.nth_token(0).kind != TokenKind::EoF {
             match &self.nth_token(0).kind {
-                TokenKind::Identifier(_) => self.parse_function().map(|f| functions.push(f))?,
-                TokenKind::Keyword(Keyword::Global) => self.parse_global().map(|g| globals.push(g))?,
-                _ => return Err(errors::CompileError::ParserError(format!("Unexpected token {:?} at line {}, column {}", self.nth_token(0).kind, self.nth_token(0).position.line, self.nth_token(0).position.column))),
+                TokenKind::Keyword(Keyword::Export) => {self.advance(); self.parse_top_level_construct(&mut functions, &mut globals, true)?},
+                _ => self.parse_top_level_construct(&mut functions, &mut globals, false)?,
             }
         }
         Ok(muni_ast::Module { functions, globals, types: Vec::new() })
     }
 
-    fn parse_global(&mut self) -> Result<muni_ast::Global, errors::CompileError> {
-        // global i32 x = 5;
-        self.expect(&TokenKind::Keyword(Keyword::Global))?;
-        if let TokenKind::Identifier(_type_name) = &self.nth_token(0).kind {
-            let ty = self.parse_type()?.ok_or_else(|| errors::CompileError::ParserError(format!("Global variable cannot have void type at line {}, column {}", self.nth_token(0).position.line, self.nth_token(0).position.column)))?;
-            if let TokenKind::Identifier(name) = &self.nth_token(0).kind {
-                let name = name.clone();
-                self.advance();
-                self.expect(&TokenKind::Operator(Operator::Assign))?;
-                let initializer = self.parse_expression()?;
-                self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
-                Ok(muni_ast::Global { name, ty, init: initializer, mutable: false, export: false })
-            } else {
-                return Err(errors::CompileError::ParserError(format!("Expected global variable name at line {}, column {}, but found {:?}", self.nth_token(0).position.line, self.nth_token(0).position.column, self.nth_token(0).kind)));
-            }
-        } else {
-            Err(errors::CompileError::ParserError(format!("Expected global variable name at line {}, column {}, but found {:?}", self.nth_token(0).position.line, self.nth_token(0).position.column, self.nth_token(0).kind)))
+    fn parse_top_level_construct(&mut self, functions: &mut Vec<muni_ast::Function>, globals: &mut Vec<muni_ast::Global>, export: bool) -> Result<(), errors::CompileError> {
+        match &self.nth_token(0).kind {
+            TokenKind::Identifier(_) => self.parse_function(export).map(|f| functions.push(f))?,
+            TokenKind::Keyword(Keyword::Global) => self.parse_global(export).map(|g| globals.push(g))?,
+            _ => return Err(errors::CompileError::ParserError(format!("Unexpected token {:?} at line {}, column {}", self.nth_token(0).kind, self.nth_token(0).position.line, self.nth_token(0).position.column))),
         }
+        Ok(())
+    }
+
+    fn parse_global(&mut self, export: bool) -> Result<muni_ast::Global, errors::CompileError> {
+        self.expect(&TokenKind::Keyword(Keyword::Global))?;
+
+        let ty = match &self.nth_token(0).kind {
+            TokenKind::Identifier(_) => self.parse_type()?
+                        .ok_or_else(|| errors::CompileError::ParserError(format!("Global variable cannot have void type at line {}, column {}", self.nth_token(0).position.line, self.nth_token(0).position.column)))?,
+            _ => return Err(errors::CompileError::ParserError(format!("Expected global variable type at line {}, column {}, but found {:?}", self.nth_token(0).position.line, self.nth_token(0).position.column, self.nth_token(0).kind))),
+        };
+
+        let name: String = match &self.nth_token(0).kind {
+            TokenKind::Identifier(name) => name.clone(),
+            _ => return Err(errors::CompileError::ParserError(format!("Expected global variable name at line {}, column {}, but found {:?}", self.nth_token(0).position.line, self.nth_token(0).position.column, self.nth_token(0).kind))),
+        };
+        self.advance();
+        self.expect(&TokenKind::Operator(Operator::Assign))?;
+        let initializer = self.parse_expression()?;
+        self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
+        Ok(muni_ast::Global { name, ty, init: initializer, mutable: false, export })
     }
     
-    pub fn parse_function(&mut self) -> Result<muni_ast::Function, errors::CompileError> {
+    fn parse_function(&mut self, export: bool) -> Result<muni_ast::Function, errors::CompileError> {
         if let TokenKind::Identifier(_type_name) = &self.nth_token(0).kind {
             let return_type = self.parse_type()?;
             if let TokenKind::Identifier(func_name) = &self.nth_token(0).kind {
@@ -93,47 +106,48 @@ impl Parser {
                 self.expect(&TokenKind::Symbol(Symbol::LBrace))?;
                 let body = self.parse_block()?;
                 self.expect(&TokenKind::Symbol(Symbol::RBrace))?;
-                Ok(muni_ast::Function { name: func_name, params, return_type, body, export: true })
+                Ok(muni_ast::Function { name: func_name, params, return_type, body, export })
             } else {
                 Err(errors::CompileError::ParserError(format!("Expected function name at line {}, column {}, but found {:?}", self.nth_token(0).position.line, self.nth_token(0).position.column, self.nth_token(0).kind)))
             }
 
         } else {
-            return Err(errors::CompileError::ParserError(format!("Expected type name at line {}, column {}, but found {:?}", self.nth_token(0).position.line, self.nth_token(0).position.column, self.nth_token(0).kind)));
+            return Err(errors::CompileError::ParserError(format!("Expected function type at line {}, column {}, but found {:?}", self.nth_token(0).position.line, self.nth_token(0).position.column, self.nth_token(0).kind)));
         }
 
     }
 
 
     fn parse_type(&mut self) -> Result<Option<muni_ast::Type>, errors::CompileError> {
-        if let TokenKind::Identifier(type_name) = &self.nth_token(0).kind {
-            let ty = match type_name.as_str() {
-                "i32" => Some(muni_ast::Type::I32),
-                "i64" => Some(muni_ast::Type::I64),
-                "f32" => Some(muni_ast::Type::F32),
-                "f64" => Some(muni_ast::Type::F64),
-                "void" => None,
-                _ => return Err(errors::CompileError::ParserError(format!("Unknown type '{}'", type_name))),
-            };
-            self.advance();
-            Ok(ty)
-        } else {
-            Err(errors::CompileError::ParserError("Expected type".to_string()))
+        match &self.nth_token(0).kind {
+            TokenKind::Identifier(type_name) => {
+                let ty: Option<muni_ast::Type> = match type_name.as_str() {
+                    "i32" => Some(muni_ast::Type::I32),
+                    "i64" => Some(muni_ast::Type::I64),
+                    "f32" => Some(muni_ast::Type::F32),
+                    "f64" => Some(muni_ast::Type::F64),
+                    "void" => None,
+                    _ => return Err(errors::CompileError::ParserError(format!("Unknown type '{}'", type_name))),
+                };
+                self.advance();
+                Ok(ty)
+            }
+            _ => Err(errors::CompileError::ParserError("Expected type".to_string())),
         }
     }
 
     fn parse_function_params(&mut self) -> Result<Vec<(String, muni_ast::Type)>, errors::CompileError> {
-        let mut params = Vec::new();
+        let mut params: Vec<(String, muni_ast::Type)> = Vec::new();
+
         while self.nth_token(0).kind != TokenKind::Symbol(Symbol::RParen) {
-            let param_type = self.parse_type()?;
+            let param_type: Option<muni_ast::Type> = self.parse_type()?;
             if param_type.is_none() {
                 return Err(errors::CompileError::ParserError(format!("Parameter type cannot be void at line {}, column {}", self.nth_token(0).position.line, self.nth_token(0).position.column)));
             }
-            let param_type = param_type.unwrap();
-            let param_name = if let TokenKind::Identifier(name) = &self.nth_token(0).kind {
-                name.clone()
-            } else {
-                return Err(errors::CompileError::ParserError(format!("Expected parameter name at line {}, column {}, but found {:?}", self.nth_token(0).position.line, self.nth_token(0).position.column, self.nth_token(0).kind)));
+            let param_type: muni_ast::Type = param_type.unwrap();
+            let param_name: String = match &self.nth_token(0).kind {
+                TokenKind::Identifier(name)  => name.clone(),
+                _ => return Err(errors::CompileError::ParserError(format!("Expected parameter name at line {}, column {}, but found {:?}", self.nth_token(0).position.line, self.nth_token(0).position.column, self.nth_token(0).kind))),
             };
             self.advance();
             params.push((param_name, param_type));
@@ -145,9 +159,9 @@ impl Parser {
     }
 
     fn parse_block(&mut self) -> Result<Vec<muni_ast::TypedNode>, errors::CompileError> {
-        let mut instructions = Vec::new();
+        let mut instructions: Vec<muni_ast::TypedNode> = Vec::new();
         while self.nth_token(0).kind != TokenKind::Symbol(Symbol::RBrace) {
-            let instruction = self.parse_node()?;
+            let instruction: muni_ast::TypedNode = self.parse_node()?;
             instructions.push(instruction);
         }
         Ok(instructions)
@@ -155,6 +169,7 @@ impl Parser {
 
     fn parse_node(&mut self) -> Result<muni_ast::TypedNode, errors::CompileError> {
         match &self.nth_token(0).kind {
+            TokenKind::EoF => Err(errors::CompileError::ParserError("Unexpected end of file".to_string())),
             TokenKind::Keyword(Keyword::Loop) => {
                 self.expect(&TokenKind::Keyword(Keyword::Loop))?;
                 self.expect(&TokenKind::Symbol(Symbol::LBrace))?;
@@ -175,44 +190,35 @@ impl Parser {
             //     self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
             //     Ok(muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Break })
             // },
-            TokenKind::EoF => Err(errors::CompileError::ParserError("Unexpected end of file".to_string())),
             _ => {
                 // check for variable declaration : i32 x = 5;
-                let saved_position = self.position;
+                let saved_position: usize = self.position;
                 if let TokenKind::Identifier(_type_name) = &self.nth_token(0).kind {
-                    if let Ok(Some(ty)) = self.parse_type() {
-                        if let TokenKind::Identifier(var_name) = &self.nth_token(0).kind {
-                            let var_name = var_name.clone();
+                    if let Ok(Some(ty)) = self.parse_type() && let TokenKind::Identifier(var_name) = &self.nth_token(0).kind {
+                        let var_name = var_name.clone();
+                        self.advance();
+                        let initializer = if self.nth_token(0).kind == TokenKind::Operator(Operator::Assign) {
                             self.advance();
-                            let initializer = if self.nth_token(0).kind == TokenKind::Operator(Operator::Assign) {
-                                self.advance();
-                                Some(Box::new(self.parse_expression()?))
-                            } else {
-                                None
-                            };
-                            if self.nth_token(0).kind == TokenKind::Symbol(Symbol::Semicolon) {
-                                self.advance();
-                            }
-                            return Ok(muni_ast::TypedNode::Statement {
-                                statement: muni_ast::Statement::VariableDeclaration { name: var_name, ty, init: initializer },
-                            });
+                            Some(Box::new(self.parse_expression()?))
                         } else {
-                            self.position = saved_position; // backtrack
-                        }
+                            None
+                        };
+                        self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
+                        return Ok(muni_ast::TypedNode::Statement {
+                            statement: muni_ast::Statement::VariableDeclaration { name: var_name, ty, init: initializer },
+                        });
                     } else {
-                        self.position = saved_position; // backtrack
+                        self.position = saved_position;
                     }
                 }
 
-                let expr = self.parse_expression()?;
-                if self.nth_token(0).kind == TokenKind::Symbol(Symbol::Semicolon) {
-                    self.advance();
-                }
+                let expr: muni_ast::TypedNode = self.parse_expression()?;
+                self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
                 Ok(muni_ast::TypedNode::Statement {
                     statement: muni_ast::Statement::Expression {
                         expression: match expr {
                             muni_ast::TypedNode::Expression { expression, .. } => expression,
-                            _ => panic!("Expected expression"),
+                            _ => return Err(errors::CompileError::ParserError("Expected expression".to_string())),
                         },
                     },
                 })
@@ -222,12 +228,12 @@ impl Parser {
 
     fn parse_if(&mut self) -> Result<muni_ast::TypedNode, errors::CompileError> {
         self.expect(&TokenKind::Keyword(Keyword::If))?;
-        let condition = Box::new(self.parse_expression()?);
+        let condition: Box<muni_ast::TypedNode> = Box::new(self.parse_expression()?);
         self.expect(&TokenKind::Symbol(Symbol::LBrace))?;
-        let then_body = self.parse_block()?;
+        let then_body: Vec<muni_ast::TypedNode> = self.parse_block()?;
         self.expect(&TokenKind::Symbol(Symbol::RBrace))?;
         
-        let else_body = if self.nth_token(0).kind == TokenKind::Keyword(Keyword::Else) {
+        let else_body: Vec<muni_ast::TypedNode> = if self.nth_token(0).kind == TokenKind::Keyword(Keyword::Else) {
             self.advance();
             self.expect(&TokenKind::Symbol(Symbol::LBrace))?;
             let body = self.parse_block()?;
