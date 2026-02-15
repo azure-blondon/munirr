@@ -13,7 +13,7 @@ needed features:
 - [x] function exports
 - [x] variables (local & global)
 - [x] an integer type
-- [ ] loops
+- [x] loops
 - [ ] imports (for WASI i/o imports)
 - [ ] a buffer type (C-style array)
 - [ ] structs
