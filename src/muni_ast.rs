@@ -1,5 +1,5 @@
 use crate::{muni_ir, errors};
-use rand::{self, rand_core::block};
+use rand;
 
 
 #[derive(Debug)]
