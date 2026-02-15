@@ -56,22 +56,63 @@ impl Parser {
     fn parse_module(&mut self) -> Result<muni_ast::Module, errors::CompileError> {
         let mut functions: Vec<muni_ast::Function> = Vec::new();
         let mut globals: Vec<muni_ast::Global> = Vec::new();
+        let mut host_imports: Vec<muni_ast::HostImport> = Vec::new();
         while self.nth_token(0).kind != TokenKind::EoF {
             match &self.nth_token(0).kind {
-                TokenKind::Keyword(Keyword::Export) => {self.advance(); self.parse_top_level_construct(&mut functions, &mut globals, true)?},
-                _ => self.parse_top_level_construct(&mut functions, &mut globals, false)?,
+                TokenKind::Keyword(Keyword::Export) => {self.advance(); self.parse_top_level_construct(&mut functions, &mut globals, &mut host_imports, true)?},
+                _ => self.parse_top_level_construct(&mut functions, &mut globals, &mut host_imports, false)?,
             }
         }
-        Ok(muni_ast::Module { functions, globals, types: Vec::new() })
+        Ok(muni_ast::Module { functions, globals, types: Vec::new(), host_imports })
     }
 
-    fn parse_top_level_construct(&mut self, functions: &mut Vec<muni_ast::Function>, globals: &mut Vec<muni_ast::Global>, export: bool) -> Result<(), errors::CompileError> {
+    fn parse_top_level_construct(&mut self, functions: &mut Vec<muni_ast::Function>, globals: &mut Vec<muni_ast::Global>, host_imports: &mut Vec<muni_ast::HostImport>, export: bool) -> Result<(), errors::CompileError> {
         match &self.nth_token(0).kind {
             TokenKind::Identifier(_) => self.parse_function(export).map(|f| functions.push(f))?,
             TokenKind::Keyword(Keyword::Global) => self.parse_global(export).map(|g| globals.push(g))?,
+            TokenKind::Keyword(Keyword::Import) => self.parse_import().map(|h| host_imports.push(h))?,
             _ => return Err(errors::CompileError::ParserError(format!("Unexpected token {:?} at line {}, column {}", self.nth_token(0).kind, self.nth_token(0).position.line, self.nth_token(0).position.column))),
         }
         Ok(())
+    }
+
+    
+    fn parse_import(&mut self) -> Result<muni_ast::HostImport, errors::CompileError> {
+        // import a.b(i32) -> i32;
+        // import a.b(i32); (void return type)
+        self.expect(&TokenKind::Keyword(Keyword::Import))?;
+        let module_name = match &self.nth_token(0).kind {
+            TokenKind::Identifier(name) => name.clone(),
+            _ => return Err(errors::CompileError::ParserError(format!("Expected module name at line {}, column {}, but found {:?}", self.nth_token(0).position.line, self.nth_token(0).position.column, self.nth_token(0).kind))),
+        };
+        self.advance();
+        self.expect(&TokenKind::Operator(Operator::Dot))?;
+        let func_name = match &self.nth_token(0).kind {
+            TokenKind::Identifier(name) => name.clone(),
+            _ => return Err(errors::CompileError::ParserError(format!("Expected function name at line {}, column {}, but found {:?}", self.nth_token(0).position.line, self.nth_token(0).position.column, self.nth_token(0).kind))),
+        };
+        self.advance();
+        self.expect(&TokenKind::Symbol(Symbol::LParen))?;
+        let mut params: Vec<muni_ast::Type> = Vec::new();
+        while self.nth_token(0).kind != TokenKind::Symbol(Symbol::RParen) {
+            let param_type = self.parse_type()?;
+            if param_type.is_none() {
+                return Err(errors::CompileError::ParserError(format!("Parameter type cannot be void at line {}, column {}", self.nth_token(0).position.line, self.nth_token(0).position.column)));
+            }
+            params.push(param_type.unwrap());
+            if self.nth_token(0).kind == TokenKind::Symbol(Symbol::Comma) {
+                self.advance();
+            }
+        }
+        self.expect(&TokenKind::Symbol(Symbol::RParen))?;
+        if self.nth_token(0).kind == TokenKind::Symbol(Symbol::Semicolon) {
+            self.advance();
+            return Ok(muni_ast::HostImport { module: module_name, function: func_name, params, return_type: None });
+        }
+        self.expect(&TokenKind::Operator(Operator::RArrow))?;
+        let return_type = self.parse_type()?;
+        self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
+        Ok(muni_ast::HostImport { module: module_name, function: func_name, params, return_type })
     }
 
     fn parse_global(&mut self, export: bool) -> Result<muni_ast::Global, errors::CompileError> {
@@ -349,6 +390,7 @@ impl Parser {
             _ => self.parse_postfix_expression(),
         }
     }
+
 
     fn parse_postfix_expression(&mut self) -> Result<muni_ast::TypedNode, errors::CompileError> {
         let mut expr = self.parse_primary()?;

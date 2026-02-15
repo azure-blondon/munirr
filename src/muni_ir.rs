@@ -6,6 +6,7 @@ use crate::wasm_ir::{self, ExportDescriptor};
 pub struct Module {
     pub functions: Vec<Function>,
     pub globals: Vec<Global>,
+    pub host_imports: Vec<HostImport>,
 }
 
 
@@ -26,6 +27,14 @@ pub struct Global {
     pub global_type: Type,
     pub init: Vec<TypedInstruction>,
     pub export: bool,
+}
+
+#[derive(Debug)]
+pub struct HostImport {
+    pub module: String,
+    pub function: String,
+    pub params: Vec<Type>,
+    pub return_type: Option<Type>,
 }
 
 
@@ -89,9 +98,30 @@ impl Module {
             types: Vec::new(),
             functions: Vec::new(),
             globals: Vec::new(),
+            host_imports: Vec::new(),
             exports: Vec::new(),
         };
         
+        for host_import in &self.host_imports {
+            module.host_imports.push(wasm_ir::HostImport {
+                module: host_import.module.clone(),
+                function: host_import.function.clone(),
+                func_type: wasm_ir::FunctionType {
+                    inputs: host_import.params.iter().map(|param| match self.lower_type(param) {
+                        wasm_ir::Type::ValueType { value_type } => value_type,
+                    }).collect(),
+                    outputs: match &host_import.return_type {
+                        None => vec![],
+                        Some(ty) => vec![match self.lower_type(ty) {
+                            wasm_ir::Type::ValueType { value_type } => value_type,
+                        }],
+                    },
+                },
+            });
+        }
+
+
+
         let function_indices: HashMap<String, usize> = self.functions.iter().enumerate().map(|(idx, func)| (func.name.clone(), idx)).collect();
 
         for global in &self.globals {
@@ -121,17 +151,35 @@ impl Module {
             // Build type for this function
             let outputs = match &function.return_type {
                 None => vec![],
-                Some(ty) => vec![self.lower_type(ty)],
+                Some(ty) => vec![match self.lower_type(ty) {
+                    wasm_ir::Type::ValueType { value_type } => value_type,
+                }],
             };
+            
             module.types.push(wasm_ir::FunctionType {
-                inputs: function.params.iter().map(|(_, ty)| self.lower_type(ty)).collect(),
+                inputs: function.params.iter().map(|(_, ty)| {
+                    match self.lower_type(ty) {
+                        wasm_ir::Type::ValueType { value_type } => value_type,
+                    }
+                }).collect(),
                 outputs,
             });
             
-            // Build function with the same index
             module.functions.push(wasm_ir::Function {
-                function_type: idx as u32,  // Type index always equals function index
-                locals: function.locals.iter().map(|(_, ty)| self.lower_type(ty)).collect(),
+                function_type: wasm_ir::FunctionType {
+                    inputs: function.params.iter().map(|(_, ty)| match self.lower_type(ty) {
+                        wasm_ir::Type::ValueType { value_type } => value_type,
+                    }).collect(),
+                    outputs: match &function.return_type {
+                        None => vec![],
+                        Some(ty) => vec![match self.lower_type(ty) {
+                            wasm_ir::Type::ValueType { value_type } => value_type,
+                        }],
+                    },
+                },
+                locals: function.locals.iter().map(|(_, ty)| match self.lower_type(ty) {
+                    wasm_ir::Type::ValueType { value_type } => value_type,
+                }).collect(),
                 body: function.body.iter().flat_map(|instr| self.lower_instruction(instr, &function_indices, Some(idx), &mut Vec::new(), &mut 0)).collect(),
             });
             
@@ -256,12 +304,21 @@ impl Module {
                 instrs
             },
             Instruction::Call { function_name, args } => {
-                let function_index = *function_indices.get(function_name).expect("Function not found"); 
+                let function_index = if let Some(idx) = function_indices.get(function_name) {
+                    // Local function: import_count + local_index
+                    self.host_imports.len() as u32 + *idx as u32
+                } else if let Some(idx) = self.host_imports.iter().position(|import| import.function == *function_name) {
+                    // Imported function: just the import index
+                    idx as u32
+                } else {
+                    panic!("Function not found: {}", function_name);
+                };
+                
                 let mut instrs = Vec::new();
                 for arg in args {
                     instrs.extend(self.lower_instruction(arg, function_indices, current_function_index, label_stack, next_label_id));
                 }
-                instrs.push(wasm_ir::Instruction::Call { function_index: function_index as u32 });
+                instrs.push(wasm_ir::Instruction::Call { function_index });
                 instrs
             }
         }
@@ -276,12 +333,12 @@ impl Module {
         }
     }
 
-    fn lower_type(&self, ty: &Type) -> wasm_ir::ValueType {
+    fn lower_type(&self, ty: &Type) -> wasm_ir::Type {
         match ty {
-            Type::I32 => wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::I32 },
-            Type::I64 => wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::I64 },
-            Type::F32 => wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::F32 },
-            Type::F64 => wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::F64 },
+            Type::I32 => wasm_ir::Type::ValueType { value_type: wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::I32 } },
+            Type::I64 => wasm_ir::Type::ValueType { value_type: wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::I64 } },
+            Type::F32 => wasm_ir::Type::ValueType { value_type: wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::F32 } },
+            Type::F64 => wasm_ir::Type::ValueType { value_type: wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::F64 } },
         }
     }
 

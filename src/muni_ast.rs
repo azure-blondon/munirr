@@ -11,6 +11,7 @@ pub struct Program {
 pub struct Module {
     pub types: Vec<TypeDef>,
     pub functions: Vec<Function>,
+    pub host_imports: Vec<HostImport>,
     pub globals: Vec<Global>,
 }
 
@@ -30,6 +31,14 @@ pub struct Global {
     pub mutable: bool,
     pub init: TypedNode,
     pub export: bool,
+}
+
+#[derive(Debug)]
+pub struct HostImport {
+    pub module: String,
+    pub function: String,
+    pub params: Vec<Type>,
+    pub return_type: Option<Type>,
 }
 
 #[derive(Debug, Clone)]
@@ -110,6 +119,16 @@ impl Program {
         let mut ir_modules = Vec::new();
         for module in &self.modules {
             let mut ir_functions = Vec::new();
+            let mut ir_host_imports = Vec::new();
+            for host_imports in &module.host_imports {
+                ir_host_imports.push(muni_ir::HostImport {
+                    module: host_imports.module.clone(),
+                    function: host_imports.function.clone(),
+                    params: host_imports.params.iter().map(|ty| self.lower_type(ty)).collect(),
+                    return_type: host_imports.return_type.as_ref().map(|ty| self.lower_type(ty)),
+                });
+            }
+
             for function in &module.functions {
                 let ir_function = muni_ir::Function {
                     name: function.name.clone(),
@@ -135,6 +154,7 @@ impl Program {
             ir_modules.push(muni_ir::Module {
                 functions: ir_functions,
                 globals: ir_globals,
+                host_imports: ir_host_imports,
             });
             for type_def in &module.types {
                 match type_def {

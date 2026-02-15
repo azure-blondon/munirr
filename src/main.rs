@@ -1,4 +1,4 @@
-use wasmtime::{Engine, Store, Instance};
+use wasmtime::{Engine, Linker, Store};
 
 mod wasm_ir;
 mod muni_ir;
@@ -19,7 +19,7 @@ pub fn compile_muni_to_wasm(muni_code: String) -> Result<Vec<u8>, errors::Compil
     let ast = parser.parse_program()?;
     let modules: Vec<muni_ir::Module> = ast.lower()?;
     let muni_ir = modules.get(0).ok_or(errors::CompileError::IRLoweringError("No modules in program".to_string()))?;
-    let wasm_ir = muni_ir.lower();
+    let mut wasm_ir = muni_ir.lower();
     let mut out = Vec::new();
     wasm_ir.emit(&mut out);
     Ok(out)
@@ -50,11 +50,23 @@ fn main() -> anyhow::Result<()> {
     let engine = Engine::default();
     let module = wasmtime::Module::from_file(&engine, output_path)?;
     let mut store = Store::new(&engine, ());
-    let instance = Instance::new(&mut store, &module, &[])?;
+    
+    // Create a Linker and add imports
+    let mut linker = Linker::new(&engine);
+    
+    linker.func_wrap("wasi_unstable", "proc_exit", |arg: i32| -> i32 {
+        std::process::exit(arg);
+    })?;
 
+    linker.func_wrap("env", "print", |arg: i32| {
+        println!("print: {}", arg);
+    })?;
+    
+    // Instantiate with the linker
+    let instance = linker.instantiate(&mut store, &module)?;
+    
     let main = instance.get_typed_func::<(), i32>(&mut store, "main")?;
     let result = main.call(&mut store, ())?;
     println!("main returned: {}", result);
-
     Ok(())
 }

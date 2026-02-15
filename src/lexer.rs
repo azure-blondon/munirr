@@ -53,6 +53,7 @@ pub enum Keyword {
     Continue,
     While,
     For,
+    Import,
 }
 
 
@@ -70,6 +71,8 @@ pub enum Operator {
     Le,
     Ge,
     Not,
+    Dot,
+    RArrow,
 }
 
 #[derive(Debug, PartialEq, Clone)]
@@ -90,7 +93,6 @@ pub struct Lexer {
 
 const SINGLE_CHAR_TOKENS: &[(&str, TokenKind)] = &[
     ("+", TokenKind::Operator(Operator::Plus)),
-    ("-", TokenKind::Operator(Operator::Minus)),
     ("*", TokenKind::Operator(Operator::Mul)),
     ("/", TokenKind::Operator(Operator::Div)),
     ("(", TokenKind::Symbol(Symbol::LParen)),
@@ -99,6 +101,7 @@ const SINGLE_CHAR_TOKENS: &[(&str, TokenKind)] = &[
     ("}", TokenKind::Symbol(Symbol::RBrace)),
     (",", TokenKind::Symbol(Symbol::Comma)),
     (";", TokenKind::Symbol(Symbol::Semicolon)),
+    (".", TokenKind::Operator(Operator::Dot)),
 ];
 
 const KEYWORDS: &[(&str, TokenKind)] = &[
@@ -113,7 +116,9 @@ const KEYWORDS: &[(&str, TokenKind)] = &[
     ("continue", TokenKind::Keyword(Keyword::Continue)),
     ("while", TokenKind::Keyword(Keyword::While)),
     ("for", TokenKind::Keyword(Keyword::For)),
+    ("import", TokenKind::Keyword(Keyword::Import)),
 ];
+
 
 
 impl Lexer {
@@ -158,6 +163,16 @@ impl Lexer {
                 self.position.advance(character);
                 Token { kind: token_kind.clone(), position: self.position.clone() }
             },
+            '-' => {
+                let token_pos = self.position.clone();
+                self.position.advance(character);
+                if self.peek_char() == Some('>') {
+                    self.position.advance('>');
+                    Token { kind: TokenKind::Operator(Operator::RArrow), position: token_pos }
+                } else {
+                    Token { kind: TokenKind::Operator(Operator::Minus), position: token_pos }
+                }
+            }
             '=' => {
                 let token_pos = self.position.clone();
                 self.position.advance(character);
@@ -195,6 +210,7 @@ impl Lexer {
                     Token { kind: TokenKind::Operator(Operator::Gt), position: self.position.clone() }
                 }
             },
+
             c if c.is_ascii_digit() => {
                 self.read_number()
             },

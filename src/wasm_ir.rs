@@ -9,12 +9,13 @@ pub struct Module {
     pub types: Vec<FunctionType>,
     pub functions: Vec<Function>,
     pub globals: Vec<Global>,
+    pub host_imports: Vec<HostImport>,
     pub exports: Vec<Export>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Function {
-    pub function_type: TypeIndex,
+    pub function_type: FunctionType,
     pub locals: Vec<ValueType>,
     pub body: Expression,
 }
@@ -29,6 +30,13 @@ pub struct Global {
 pub enum Mutability {
     Mutable,
     Immutable,
+}
+
+#[derive(Debug, Clone)]
+pub struct HostImport {
+    pub module: String,
+    pub function: String,
+    pub func_type: FunctionType,
 }
 
 #[derive(Debug, Clone)]
@@ -125,7 +133,7 @@ pub enum Instruction {
 
 
 pub trait Emittable {
-    fn emit(&self, out: &mut Vec<u8>);
+    fn emit(&mut self, out: &mut Vec<u8>);
 }
 
 
@@ -152,32 +160,56 @@ fn write_section(section_id: u8, payload: &[u8], out: &mut Vec<u8>) {
 
 
 impl Emittable for Module {
-    fn emit(&self, out: &mut Vec<u8>) {
+    fn emit(&mut self, out: &mut Vec<u8>) {
         // WASM Magic Number and Version
         out.extend_from_slice(&[0x00, 0x61, 0x73, 0x6d]); // "\0asm"
         out.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // version 1
 
+        self.prepare();
+
         // Type Section
         let mut type_section = Vec::new();
         encode_u32(self.types.len() as u32, &mut type_section);
-        for func_type in &self.types {
+        for func_type in &mut self.types {
             func_type.emit(&mut type_section);
         }
         write_section(1, &type_section, out);
+
+
+        // Host Import Section
+        let mut import_section = Vec::new();
+        encode_u32(self.host_imports.len() as u32, &mut import_section);
+        for import in self.host_imports.clone() {
+            // Module name
+            encode_u32(import.module.len() as u32, &mut import_section);
+            import_section.extend_from_slice(import.module.as_bytes());
+            
+            // Function name
+            encode_u32(import.function.len() as u32, &mut import_section);
+            import_section.extend_from_slice(import.function.as_bytes());
+            
+            // Import kind: 0x00 = function
+            import_section.push(0x00);
+            
+            let type_index = self.find_or_create_type_index(&import.func_type);
+            encode_u32(type_index, &mut import_section);
+        }
+        write_section(2, &import_section, out);
 
         
         // Function Section
         let mut function_section = Vec::new();
         encode_u32(self.functions.len() as u32, &mut function_section);
         for func in &self.functions {
-            encode_u32(func.function_type, &mut function_section);
+            encode_u32(self.clone().find_or_create_type_index(&func.function_type), &mut function_section);
         }
         write_section(3, &function_section, out);
         
+
         // Global Section
         let mut global_section = Vec::new();
         encode_u32(self.globals.len() as u32, &mut global_section);
-        for global in &self.globals {
+        for global in &mut self.globals {
             global.emit(&mut global_section);
         }
         write_section(6, &global_section, out);
@@ -186,13 +218,15 @@ impl Emittable for Module {
         // Export Section
         let mut export_section = Vec::new();
         encode_u32(self.exports.len() as u32, &mut export_section);
-        for export in &self.exports {
+        for export in &mut self.exports {
             encode_u32(export.name.len() as u32, &mut export_section);
             export_section.extend_from_slice(export.name.as_bytes());
             match &export.descriptor {
                 ExportDescriptor::FunctionIndex(index) => {
                     export_section.push(0x00); // Function export
-                    encode_u32(*index, &mut export_section);
+                    // Adjust index: imports come first in the function index space
+                    let adjusted_index = self.host_imports.len() as u32 + index;
+                    encode_u32(adjusted_index, &mut export_section);
                 }
                 ExportDescriptor::GlobalIndex(index) => {
                     export_section.push(0x03); // Global export
@@ -205,7 +239,7 @@ impl Emittable for Module {
         // Code Section
         let mut code_section = Vec::new();
         encode_u32(self.functions.len() as u32, &mut code_section);
-        for func in &self.functions {
+        for func in &mut self.functions {
             func.emit(&mut code_section);
         }
         write_section(10, &code_section, out);
@@ -216,23 +250,23 @@ impl Emittable for Module {
 
 
 impl Emittable for FunctionType {
-    fn emit(&self, out: &mut Vec<u8>) {
+    fn emit(&mut self, out: &mut Vec<u8>) {
         out.push(0x60); // Function type form
         // Emit inputs
         encode_u32(self.inputs.len() as u32, out);
-        for input in &self.inputs {
+        for input in &mut self.inputs {
             input.emit(out);
         }
         // Emit outputs
         encode_u32(self.outputs.len() as u32, out);
-        for output in &self.outputs {
+        for output in &mut self.outputs {
             output.emit(out);
         }
     }
 }
 
 impl Emittable for ValueType {
-    fn emit(&self, out: &mut Vec<u8>) {
+    fn emit(&mut self, out: &mut Vec<u8>) {
         match self {
             ValueType::NumType { num_type } => {
                 match num_type {
@@ -247,7 +281,7 @@ impl Emittable for ValueType {
 }
 
 impl Emittable for Function {
-    fn emit(&self, out: &mut Vec<u8>) {
+    fn emit(&mut self, out: &mut Vec<u8>) {
         let mut func_body = Vec::new();
         // Emit locals
         let mut local_counts = std::collections::HashMap::new();
@@ -257,10 +291,10 @@ impl Emittable for Function {
         encode_u32(local_counts.len() as u32, &mut func_body);
         for (local_type, count) in local_counts {
             encode_u32(count, &mut func_body);
-            local_type.emit(&mut func_body);
+            local_type.clone().emit(&mut func_body);
         }
         // Emit body
-        for instr in &self.body {
+        for instr in &mut self.body {
             instr.emit(&mut func_body);
         }
         func_body.push(0x0B); // End opcode
@@ -272,7 +306,7 @@ impl Emittable for Function {
 }
 
 impl Emittable for Instruction {
-    fn emit(&self, out: &mut Vec<u8>) {
+    fn emit(&mut self, out: &mut Vec<u8>) {
         match self {
             Instruction::I32Const { value } => {
                 out.push(0x41);
@@ -413,13 +447,13 @@ impl Emittable for Instruction {
 
 
 impl Emittable for Global {
-    fn emit(&self, out: &mut Vec<u8>) {
+    fn emit(&mut self, out: &mut Vec<u8>) {
         self.global_type.emit(out);
         match self.mutable {
             Mutability::Mutable => out.push(0x01),
             Mutability::Immutable => out.push(0x00),
         }
-        for instr in &self.init {
+        for instr in &mut self.init {
             instr.emit(out);
         }
         out.push(0x0B); // End opcode
@@ -427,6 +461,40 @@ impl Emittable for Global {
 }
 
 impl Module {
+
+
+    pub fn prepare(&mut self) {
+        // Add all import types to the types section first
+        let func_types: Vec<_> = self.host_imports.iter().map(|import| import.func_type.clone()).collect();
+        for func_type in func_types {
+            self.find_or_create_type_index(&func_type);
+        }
+        
+        // Add all function types
+        let func_types: Vec<_> = self.functions.iter().map(|func| {
+            func.function_type.clone()
+        }).collect();
+        for func_type in func_types {
+            self.find_or_create_type_index(&func_type);
+        }
+    }
+
+
+    fn find_or_create_type_index(&mut self, func_type: &FunctionType) -> u32 {
+        // Find matching type in self.types
+        for (i, existing_type) in self.types.iter().enumerate() {
+            if existing_type.inputs == func_type.inputs && existing_type.outputs == func_type.outputs {
+                return i as u32;
+            }
+        }
+        // If not found, create new type
+        let new_index = self.types.len() as u32;
+        self.types.push(func_type.clone());
+        new_index
+    }
+
+
+
     #[allow(unused)]
     pub fn display(&self) -> String {
         let mut s = String::new();
