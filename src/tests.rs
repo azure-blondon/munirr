@@ -3,7 +3,7 @@
 use crate::compile_muni_to_wasm;
 
 
-fn run_all_tests() {
+pub fn run_all_tests() {
     let test_dirs = std::fs::read_dir("tests").expect("Failed to read tests directory");
     let mut passed = 0;
     let mut failed = 0;
@@ -30,11 +30,11 @@ fn run_all_tests() {
                 passed += 1;
             }
             Ok(false) => {
-                println!("✗ {}", test_name);
+                println!("X {}", test_name);
                 failed += 1;
             }
             Err(e) => {
-                println!("⚠ {} ({})", test_name, e);
+                println!("! {} ({})", test_name, e);
                 errors += 1;
             }
         }

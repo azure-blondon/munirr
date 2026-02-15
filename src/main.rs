@@ -17,8 +17,8 @@ pub fn compile_muni_to_wasm(muni_code: String) -> Result<Vec<u8>, errors::Compil
     let lexer = lexer::Lexer::new(muni_code);
     let mut parser = parser::Parser::new(lexer);
     let ast = parser.parse_program()?;
-    let modules = ast.lower()?;
-    let muni_ir = modules.get(0).unwrap();
+    let modules: Vec<muni_ir::Module> = ast.lower()?;
+    let muni_ir = modules.get(0).ok_or(errors::CompileError::IRLoweringError("No modules in program".to_string()))?;
     let wasm_ir = muni_ir.lower();
     let mut out = Vec::new();
     wasm_ir.emit(&mut out);
@@ -30,6 +30,13 @@ pub fn compile_muni_to_wasm(muni_code: String) -> Result<Vec<u8>, errors::Compil
 
 fn main() -> anyhow::Result<()> {
     let args: Vec<String> = std::env::args().collect();
+
+    if args.len() == 1 {
+        println!("No input file provided. Running tests...");
+        tests::run_all_tests();
+        return Ok(());
+    }
+
     if args.len() < 3 {
         eprintln!("Usage: {} <input_file> <output_file>", args[0]);
         return Ok(());

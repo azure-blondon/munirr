@@ -1,5 +1,5 @@
 use crate::{muni_ir, errors};
-use rand;
+use rand::{self, rand_core::block};
 
 
 #[derive(Debug)]
@@ -62,6 +62,8 @@ pub enum Statement {
     VariableDeclaration { name: String, ty: Type, init: Option<Box<TypedNode>> },
     Block { body: Vec<TypedNode> },
     Loop { body: Vec<TypedNode> },
+    Break,
+    Continue,
 }
 
 #[derive(Debug, Clone)]
@@ -93,6 +95,13 @@ pub enum Literal {
 }
 
 
+#[derive(Debug, Clone)]
+enum BlockType {
+    Loop,
+    If,
+    Block,
+}
+
 
 
 
@@ -106,7 +115,7 @@ impl Program {
                     name: function.name.clone(),
                     params: function.params.iter().map(|(name, ty)| (name.clone(), self.lower_type(ty))).collect(),
                     return_type: function.return_type.as_ref().map(|ty| self.lower_type(ty)),
-                    body: self.lower_instructions(&function.body)?,
+                    body: self.lower_instructions(&function.body, Vec::new())?,
                     export: function.export,
                     locals: function.locals().iter().map(|(name, ty)| (name.clone(), self.lower_type(ty))).collect(),
             
@@ -119,7 +128,7 @@ impl Program {
                     name: global.name.clone(),
                     global_type: self.lower_type(&global.ty),
                     mutable: global.mutable,
-                    init: vec![self.lower_instruction(&global.init)?],
+                    init: vec![self.lower_instruction(&global.init, Vec::new())?],
                     export: global.export,
                 });
             }
@@ -149,32 +158,33 @@ impl Program {
         }
     }
 
-    fn lower_instructions(&self, instructions: &[TypedNode]) -> Result<Vec<muni_ir::TypedInstruction>, errors::CompileError> {
+    fn lower_instructions(&self, instructions: &[TypedNode], block_stack: Vec<BlockType>) -> Result<Vec<muni_ir::TypedInstruction>, errors::CompileError> {
         let mut ir_instructions = Vec::new();
         for instr in instructions {
-            ir_instructions.push(self.lower_instruction(instr)?);
+            ir_instructions.push(self.lower_instruction(instr, block_stack.clone())?);
         }
         Ok(ir_instructions)
     }
 
-    fn lower_instruction(&self, instruction: &TypedNode ) -> Result<muni_ir::TypedInstruction, errors::CompileError> {
+    fn lower_instruction(&self, instruction: &TypedNode, mut block_stack: Vec<BlockType>) -> Result<muni_ir::TypedInstruction, errors::CompileError> {
         let instr = match instruction {
             TypedNode::Statement { statement } => match statement {
                 Statement::If { condition, then_body, else_body } => {
-                    let condition = Box::new(self.lower_instruction(condition)?);
-                    let then_body = self.lower_instructions(then_body)?;
-                    let else_body = self.lower_instructions(else_body)?;
+                    let condition = Box::new(self.lower_instruction(condition, block_stack.clone())?);
+                    block_stack.push(BlockType::If);
+                    let then_body = self.lower_instructions(then_body, block_stack.clone())?;
+                    let else_body = self.lower_instructions(else_body, block_stack.clone())?;
                     muni_ir::Instruction::If { condition, then_body, else_body }
                 },
                 Statement::Return { value } => {
-                    let value: Option<Box<muni_ir::TypedInstruction>> = value.as_ref().and_then(|v| self.lower_instruction(v).map(Box::new).ok());
+                    let value: Option<Box<muni_ir::TypedInstruction>> = value.as_ref().and_then(|v| self.lower_instruction(v, block_stack.clone()).map(Box::new).ok());
                     muni_ir::Instruction::Return { value }
                 },
                 Statement::Expression { expression } => {
                     self.lower_expression(expression)?
                 },
                 Statement::VariableDeclaration { name, ty, init } => {
-                    let init = init.as_ref().and_then(|init| self.lower_instruction(init).map(Box::new).ok());
+                    let init = init.as_ref().and_then(|init| self.lower_instruction(init, block_stack.clone()).map(Box::new).ok());
                     let default = Box::new(muni_ir::TypedInstruction {
                         instruction: muni_ir::Instruction::Const { value: match ty {
                             Type::I32 => muni_ir::Value::I32(0),
@@ -189,11 +199,13 @@ impl Program {
                     muni_ir::Instruction::VarSet { name: name.clone(), value: init.unwrap_or(default) }
                 },
                 Statement::Block { body } => {
-                    let body = self.lower_instructions(body)?;
+                    block_stack.push(BlockType::Block);
+                    let body = self.lower_instructions(body, block_stack.clone())?;
                     muni_ir::Instruction::Block { label: format!("block_{}", rand::random::<u64>()), body }
                 },
                 Statement::Loop { body } => {
-                    let body = self.lower_instructions(body)?;
+                    block_stack.push(BlockType::Loop);
+                    let body = self.lower_instructions(body, block_stack.clone())?;
                     
                     let loop_label = format!("loop_{}", rand::random::<u64>());
 
@@ -211,6 +223,13 @@ impl Program {
                         },
                     ] }
 
+                },
+                Statement::Break => {
+                    // go back to last loop or block and break to it
+                    muni_ir::Instruction::Break { value: block_stack.iter().rev().enumerate().find(|(_, bt)| matches!(bt, BlockType::Loop | BlockType::Block)).map(|(idx, _)| idx).unwrap_or(0) as u32 + 1 }
+                },
+                Statement::Continue => {
+                    muni_ir::Instruction::Break { value: block_stack.iter().rev().enumerate().find(|(_, bt)| matches!(bt, BlockType::Loop | BlockType::Block)).map(|(idx, _)| idx).unwrap_or(0) as u32 }
                 }
             },
             TypedNode::Expression { expression, result_type: _ } => {
@@ -230,8 +249,8 @@ impl Program {
     fn lower_expression(&self, expression: &Expression) -> Result<muni_ir::Instruction, errors::CompileError> {
         match expression {
             Expression::BinaryOp { op, left, right } => {
-                let lowered_left = Box::new(self.lower_instruction(left)?);
-                let lowered_right = Box::new(self.lower_instruction(right)?);
+                let lowered_left = Box::new(self.lower_instruction(left, Vec::new())?);
+                let lowered_right = Box::new(self.lower_instruction(right, Vec::new())?);
 
                 Ok(match op {
                     BinOp::Add => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Add, left: lowered_left, right: lowered_right },
@@ -261,7 +280,7 @@ impl Program {
                 Ok(muni_ir::Instruction::VarGet { name: name.clone() })
             },
             Expression::Call { function, args } => {
-                let lowered_args = args.iter().map(|arg| self.lower_instruction(arg)).collect::<Result<Vec<_>, _>>()?;
+                let lowered_args = args.iter().map(|arg| self.lower_instruction(arg, Vec::new())).collect::<Result<Vec<_>, _>>()?;
                 Ok(muni_ir::Instruction::Call { function_name: function.clone(), args: lowered_args })
             },
         }
@@ -335,6 +354,12 @@ impl Program {
                         self.display_instruction(instr, indent + 2);
                     }
                 },
+                Statement::Break => {
+                    println!("{}Break", indent_str);
+                },
+                Statement::Continue => {
+                    println!("{}Continue", indent_str);
+                }
             },
             TypedNode::Expression { expression, result_type } => {
                 println!("{}Expression: {:?} (type: {:?})", indent_str, expression, result_type);
@@ -386,7 +411,9 @@ impl Function {
                     for instr in body {
                         self.collect_locals(instr, locals);
                     }
-                }
+                },
+                Statement::Break => {},
+                Statement::Continue => {},
             },
             TypedNode::Expression { expression: _, result_type: _ } => {},
         }

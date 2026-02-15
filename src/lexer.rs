@@ -50,6 +50,7 @@ pub enum Keyword {
     Global,
     Loop,
     Break,
+    Continue,
 }
 
 
@@ -107,6 +108,7 @@ const KEYWORDS: &[(&str, TokenKind)] = &[
     ("global", TokenKind::Keyword(Keyword::Global)),
     ("loop", TokenKind::Keyword(Keyword::Loop)),
     ("break", TokenKind::Keyword(Keyword::Break)),
+    ("continue", TokenKind::Keyword(Keyword::Continue)),
 ];
 
 

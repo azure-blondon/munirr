@@ -185,11 +185,16 @@ impl Parser {
                 self.expect(&TokenKind::Symbol(Symbol::RBrace))?;
                 Ok(muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Block { body: block } })
             },
-            // TokenKind::Keyword(Keyword::Break) => {
-            //     self.expect(&TokenKind::Keyword(Keyword::Break))?;
-            //     self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
-            //     Ok(muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Break })
-            // },
+            TokenKind::Keyword(Keyword::Break) => {
+                self.expect(&TokenKind::Keyword(Keyword::Break))?;
+                self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
+                Ok(muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Break })
+            },
+            TokenKind::Keyword(Keyword::Continue) => {
+                self.expect(&TokenKind::Keyword(Keyword::Continue))?;
+                self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
+                Ok(muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Continue })
+            },
             _ => {
                 // check for variable declaration : i32 x = 5;
                 let saved_position: usize = self.position;
