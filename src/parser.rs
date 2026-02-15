@@ -195,6 +195,26 @@ impl Parser {
                 self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
                 Ok(muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Continue })
             },
+            TokenKind::Keyword(Keyword::While) => {
+                self.expect(&TokenKind::Keyword(Keyword::While))?;
+                self.expect(&TokenKind::Symbol(Symbol::LParen))?;
+                let condition = self.parse_expression()?;
+                self.expect(&TokenKind::Symbol(Symbol::RParen))?;
+                self.expect(&TokenKind::Symbol(Symbol::LBrace))?;
+                let body = self.parse_block()?;
+                self.expect(&TokenKind::Symbol(Symbol::RBrace))?;
+                Ok(muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Loop { body: vec![
+                        muni_ast::TypedNode::Statement { statement: muni_ast::Statement::If {
+                            condition: Box::new(condition),
+                            then_body: vec![
+                                muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Block { body: body.clone() } },
+                            ],
+                            else_body: vec![
+                                muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Break },
+                            ],
+                        } },
+                ] } })
+             }
             _ => {
                 // check for variable declaration : i32 x = 5;
                 let saved_position: usize = self.position;

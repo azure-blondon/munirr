@@ -51,6 +51,8 @@ pub enum Keyword {
     Loop,
     Break,
     Continue,
+    While,
+    For,
 }
 
 
@@ -109,6 +111,8 @@ const KEYWORDS: &[(&str, TokenKind)] = &[
     ("loop", TokenKind::Keyword(Keyword::Loop)),
     ("break", TokenKind::Keyword(Keyword::Break)),
     ("continue", TokenKind::Keyword(Keyword::Continue)),
+    ("while", TokenKind::Keyword(Keyword::While)),
+    ("for", TokenKind::Keyword(Keyword::For)),
 ];
 
 
