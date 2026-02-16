@@ -88,12 +88,14 @@ pub enum NumType {
 pub type Expression = Vec<Instruction>;
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum BlockType {
     TypeIndex { index: TypeIndex },
     ValueTypes { value_types: Vec<ValueType> },
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum Instruction {
     I32Const { value: i32 },
     I64Const { value: i64 },
@@ -162,6 +164,26 @@ fn encode_i32(n: i32, out: &mut Vec<u8>) {
     let mut more = true;
     let mut value = n as u32;
     let size = 32;
+
+    while more {
+        let mut byte = (value & 0x7F) as u8;
+        value >>= 7;
+
+        let sign_bit = (byte & 0x40) != 0;
+
+        if (value == 0 && !sign_bit) || (value == (!0 >> (size - 7)) && sign_bit) {
+            more = false;
+        } else {
+            byte |= 0x80;
+        }
+
+        out.push(byte);
+    }
+}
+fn encode_i64(n: i64, out: &mut Vec<u8>) {
+    let mut more = true;
+    let mut value = n as u64;
+    let size = 64;
 
     while more {
         let mut byte = (value & 0x7F) as u8;
@@ -362,11 +384,11 @@ impl Emittable for Instruction {
         match self {
             Instruction::I32Const { value } => {
                 out.push(0x41);
-                encode_u32(*value as u32, out);
+                encode_i32(*value, out);
             }
             Instruction::I64Const { value } => {
                 out.push(0x42);
-                encode_u32(*value as u64 as u32, out);
+                encode_i64(*value, out);
             }
             Instruction::F32Const { value } => {
                 out.push(0x43);

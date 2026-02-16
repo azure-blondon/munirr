@@ -52,6 +52,7 @@ pub enum Type {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub enum TypeDef {
     Alias { name: String, ty: Type },
 }
