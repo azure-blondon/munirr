@@ -202,13 +202,13 @@ impl Parser {
     fn parse_block(&mut self) -> Result<Vec<muni_ast::TypedNode>, errors::CompileError> {
         let mut instructions: Vec<muni_ast::TypedNode> = Vec::new();
         while self.nth_token(0).kind != TokenKind::Symbol(Symbol::RBrace) {
-            let instruction: muni_ast::TypedNode = self.parse_node()?;
+            let instruction: muni_ast::TypedNode = self.parse_node(true)?;
             instructions.push(instruction);
         }
         Ok(instructions)
     }
 
-    fn parse_node(&mut self) -> Result<muni_ast::TypedNode, errors::CompileError> {
+    fn parse_node(&mut self, semi: bool) -> Result<muni_ast::TypedNode, errors::CompileError> {
         match &self.nth_token(0).kind {
             TokenKind::EoF => Err(errors::CompileError::ParserError("Unexpected end of file".to_string())),
             TokenKind::Keyword(Keyword::Loop) => {
@@ -228,12 +228,16 @@ impl Parser {
             },
             TokenKind::Keyword(Keyword::Break) => {
                 self.expect(&TokenKind::Keyword(Keyword::Break))?;
-                self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
+                if semi {
+                    self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
+                }
                 Ok(muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Break })
             },
             TokenKind::Keyword(Keyword::Continue) => {
                 self.expect(&TokenKind::Keyword(Keyword::Continue))?;
-                self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
+                if semi {
+                    self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
+                }
                 Ok(muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Continue })
             },
             TokenKind::Keyword(Keyword::While) => {
@@ -255,7 +259,35 @@ impl Parser {
                             ],
                         } },
                 ] } })
-             }
+            }
+            TokenKind::Keyword(Keyword::For) => {
+                self.expect(&TokenKind::Keyword(Keyword::For))?;
+                self.expect(&TokenKind::Symbol(Symbol::LParen))?;
+                let init = self.parse_node(true)?;
+                let condition = self.parse_expression()?;
+                self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
+                let update = self.parse_node(false)?;
+                self.expect(&TokenKind::Symbol(Symbol::RParen))?;
+                self.expect(&TokenKind::Symbol(Symbol::LBrace))?;
+                let body = self.parse_block()?;
+                self.expect(&TokenKind::Symbol(Symbol::RBrace))?;
+
+                Ok(muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Block { body: vec![
+                    init,
+                    muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Loop { body: vec![
+                        muni_ast::TypedNode::Statement { statement: muni_ast::Statement::If {
+                            condition: Box::new(condition),
+                            then_body: vec![
+                                muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Block { body: body.clone() } },
+                                update,
+                            ],
+                            else_body: vec![
+                                muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Break },
+                            ],
+                        } },
+                    ] } },
+                ] } })
+            }
             _ => {
                 // check for variable declaration : i32 x = 5;
                 let saved_position: usize = self.position;
@@ -269,7 +301,9 @@ impl Parser {
                         } else {
                             None
                         };
-                        self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
+                        if semi {
+                            self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
+                        }
                         return Ok(muni_ast::TypedNode::Statement {
                             statement: muni_ast::Statement::VariableDeclaration { name: var_name, ty, init: initializer },
                         });
@@ -279,7 +313,9 @@ impl Parser {
                 }
 
                 let expr: muni_ast::TypedNode = self.parse_expression()?;
-                self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
+                if semi {
+                    self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
+                }
                 Ok(muni_ast::TypedNode::Statement {
                     statement: muni_ast::Statement::Expression {
                         expression: match expr {

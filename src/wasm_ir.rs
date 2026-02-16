@@ -95,7 +95,6 @@ pub enum BlockType {
 
 #[derive(Debug, Clone)]
 pub enum Instruction {
-    
     I32Const { value: i32 },
     I64Const { value: i64 },
     F32Const { value: f32 },
