@@ -418,10 +418,31 @@ impl Parser {
 
     fn parse_unary_expression(&mut self) -> Result<muni_ast::TypedNode, errors::CompileError> {
         match &self.nth_token(0).kind {
-            TokenKind::Operator(Operator::Minus) | TokenKind::Operator(Operator::Plus) => {
+            TokenKind::Operator(Operator::Minus) => {
                 self.advance();
                 let operand = self.parse_unary_expression()?;
-                Ok(operand) // TODO: handle unary operators properly
+                Ok(muni_ast::TypedNode::Expression {
+                    expression: muni_ast::Expression::UnaryOp {
+                        op: muni_ast::UnOp::Neg,
+                        operand: Box::new(operand),
+                    },
+                    result_type: muni_ast::Type::I32, // TODO: infer type
+                })
+            },
+            TokenKind::Operator(Operator::Plus) => {
+                self.advance();
+                self.parse_unary_expression()
+            },
+            TokenKind::Operator(Operator::Not) => {
+                self.advance();
+                let operand = self.parse_unary_expression()?;
+                Ok(muni_ast::TypedNode::Expression {
+                    expression: muni_ast::Expression::UnaryOp {
+                        op: muni_ast::UnOp::Not,
+                        operand: Box::new(operand),
+                    },
+                    result_type: muni_ast::Type::I32, // TODO: infer type
+                })
             },
             _ => self.parse_postfix_expression(),
         }

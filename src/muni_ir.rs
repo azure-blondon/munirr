@@ -53,6 +53,7 @@ pub struct TypedInstruction {
 #[derive(Debug, Clone)]
 pub enum Instruction {
     Const { value: Value },
+    UnaryOp { op: UnOp, operand: Box<TypedInstruction> },
     BinaryOp { op: BinOp, left: Box<TypedInstruction>, right: Box<TypedInstruction> },
     VarGet { name: String },
     VarSet { name: String, value: Box<TypedInstruction> },
@@ -62,6 +63,10 @@ pub enum Instruction {
     Break { value: u32 },
     Return { value: Option<Box<TypedInstruction>> },
     Call { function_name: String, args: Vec<TypedInstruction> },
+    Load { address: Box<TypedInstruction> },
+    Store { address: Box<TypedInstruction>, value: Box<TypedInstruction> },
+    Alloc { size: Box<TypedInstruction> },
+    Drop,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +83,12 @@ pub enum BinOp {
 }
 
 #[derive(Debug, Clone)]
+pub enum UnOp {
+    Neg,
+    Not,
+}
+
+#[derive(Debug, Clone)]
 pub enum Value {
     I32(i32),
     I64(i64),
@@ -91,7 +102,7 @@ pub enum Value {
 
 
 impl Module {
-    pub fn lower(&self) -> wasm_ir::Module {
+    pub fn lower(&mut self) -> wasm_ir::Module {
         let mut module = wasm_ir::Module {
             types: Vec::new(),
             globals: Vec::new(),
@@ -101,6 +112,29 @@ impl Module {
             exports: Vec::new(),
         };
         
+        self.globals.push(Global {
+            name: "_heap_ptr".to_string(),
+            mutable: true,
+            global_type: Type::I32,
+            init: vec![TypedInstruction {
+                instruction: Instruction::Const { value: Value::I32(1024) },
+                result_type: Some(Type::I32),
+            }],
+            export: false,
+        });
+
+        self.globals.push(Global {
+            name: "_temp_ptr".to_string(),
+            mutable: true,
+            global_type: Type::I32,
+            init: vec![TypedInstruction {
+                instruction: Instruction::Const { value: Value::I32(0) },
+                result_type: Some(Type::I32),
+            }],
+            export: false,
+        });
+        
+
         let mut function_indices: Vec<String> = Vec::new();
 
         for host_import in &self.host_imports {
@@ -192,7 +226,7 @@ impl Module {
         }
 
 
-        // TODO handle memory and other module components
+        // TODO handle memory
         module.memories.push(wasm_ir::Memory {
             min_pages: 1,
             max_pages: None,
@@ -217,6 +251,21 @@ impl Module {
     ) -> Vec<wasm_ir::Instruction> {
         match &instruction.instruction {
             Instruction::Const { value } => vec![self.lower_value(&value)],
+            Instruction::UnaryOp { op, operand } => {
+                let mut instrs = self.lower_instruction(operand, function_indices, current_function_index, label_stack, next_label_id);
+                match op {
+                    UnOp::Neg => {
+                        instrs.push(wasm_ir::Instruction::I32Const { value: -1 });
+                        instrs.push(wasm_ir::Instruction::I32Mul);
+                    }
+                    UnOp::Not => {
+                        instrs.push(wasm_ir::Instruction::I32Const { value: 0 });
+                        instrs.push(wasm_ir::Instruction::I32Eq);
+                    }
+                }
+                instrs
+                
+            }
             Instruction::BinaryOp { op, left, right } => {
                 let mut instrs = self.lower_instruction(left, function_indices, current_function_index, label_stack, next_label_id);
                 instrs.extend(self.lower_instruction(right, function_indices, current_function_index, label_stack, next_label_id));
@@ -233,6 +282,49 @@ impl Module {
                 });
                 instrs
             },
+            Instruction::Load { address } => {
+                let mut instrs = self.lower_instruction(address, function_indices, current_function_index, label_stack, next_label_id);
+                instrs.push(wasm_ir::Instruction::I32Load { align: 1, offset: 0 });
+                instrs
+            },
+            Instruction::Store { address, value } => {
+                let mut instrs = self.lower_instruction(address, function_indices, current_function_index, label_stack, next_label_id);
+                instrs.extend(self.lower_instruction(value, function_indices, current_function_index, label_stack, next_label_id));
+                instrs.push(wasm_ir::Instruction::I32Store { align: 1, offset: 0 });
+                instrs
+            },
+
+            Instruction::Alloc { size } => {
+                let mut instrs = Vec::new();
+                
+                // Evaluate size once and store it
+                let size_instrs = self.lower_instruction(size, function_indices, current_function_index, label_stack, next_label_id);
+                
+                // ptr = load _heap_ptr
+                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_heap_ptr") });
+                instrs.push(wasm_ir::Instruction::GlobalSet { id: self.get_global_index("_temp_ptr") });
+                
+                // Store length at ptr: *ptr = size
+                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_temp_ptr") });
+                instrs.extend(size_instrs.clone());  // Use the cached size
+                instrs.push(wasm_ir::Instruction::I32Store { align: 1, offset: 0 });
+                
+                // Increment _heap_ptr by (4 + size)
+                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_heap_ptr") });
+                instrs.push(wasm_ir::Instruction::I32Const { value: 4 });
+                instrs.extend(size_instrs.clone());  // Use the cached size again
+                instrs.push(wasm_ir::Instruction::I32Add);
+                instrs.push(wasm_ir::Instruction::I32Add);
+                instrs.push(wasm_ir::Instruction::GlobalSet { id: self.get_global_index("_heap_ptr") });
+                
+                // Return ptr + 4 (data start, skipping length)
+                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_temp_ptr") });
+                instrs.push(wasm_ir::Instruction::I32Const { value: 4 });
+                instrs.push(wasm_ir::Instruction::I32Add);
+                
+                instrs
+            }
+
             Instruction::VarGet { name } => {
                 if let Some(func_idx) = current_function_index {
                     let local_func_idx = func_idx - self.host_imports.len();
@@ -326,6 +418,7 @@ impl Module {
                 instrs.push(wasm_ir::Instruction::Call { function_index });
                 instrs
             }
+            Instruction::Drop => vec![wasm_ir::Instruction::Drop],
         }
     }
 

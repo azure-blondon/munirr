@@ -79,6 +79,7 @@ pub enum Statement {
 #[derive(Debug, Clone)]
 pub enum Expression {
     BinaryOp { op: BinOp, left: Box<TypedNode>, right: Box<TypedNode> },
+    UnaryOp { op: UnOp, operand: Box<TypedNode> },
     Literal { value: Literal },
     Identifier { name: String },
     Call { function: String, args: Vec<TypedNode> },
@@ -96,6 +97,12 @@ pub enum BinOp {
     Le,
     Eq,
     Assign,
+}
+
+#[derive(Debug, Clone)]
+pub enum UnOp {
+    Neg,
+    Not,
 }
 
 #[derive(Debug, Clone)]
@@ -202,7 +209,37 @@ impl Program {
                     muni_ir::Instruction::Return { value }
                 },
                 Statement::Expression { expression } => {
-                    self.lower_expression(expression)?
+                    let expr_instr = self.lower_expression(expression)?;
+                    
+                    let needs_drop = match expression {
+                        Expression::BinaryOp { op: _, left: _, right: _ } => true,
+                        Expression::UnaryOp { op: _, operand: _ } => true,
+                        Expression::Literal { value: _ } => true,
+                        Expression::Identifier { name: _ } => true,
+                        Expression::Call { function: function_name, args: _ } if function_name == "store" => false,
+                        Expression::Call { function: function_name, args: _ }  => {
+                            // Check if the function returns a value
+                            self.modules.iter().any(|module| module.function_returns_value(function_name))
+                        }
+                    };
+                    
+                    if needs_drop {
+                        muni_ir::Instruction::Block {
+                            label: format!("expr_drop_{}", rand::random::<u64>()),
+                            body: vec![
+                                muni_ir::TypedInstruction {
+                                    instruction: expr_instr,
+                                    result_type: None,
+                                },
+                                muni_ir::TypedInstruction {
+                                    instruction: muni_ir::Instruction::Drop,
+                                    result_type: None,
+                                }
+                            ]
+                        }
+                    } else {
+                        expr_instr
+                    }
                 },
                 Statement::VariableDeclaration { name, ty, init } => {
                     let init = init.as_ref().and_then(|init| self.lower_instruction(init, block_stack.clone()).map(Box::new).ok());
@@ -255,6 +292,7 @@ impl Program {
             },
             TypedNode::Expression { expression, result_type: _ } => {
                 self.lower_expression(expression)?
+
             },
         };
         Ok(muni_ir::TypedInstruction {
@@ -269,6 +307,13 @@ impl Program {
 
     fn lower_expression(&self, expression: &Expression) -> Result<muni_ir::Instruction, errors::CompileError> {
         match expression {
+            Expression::UnaryOp { op, operand } => {
+                let lowered_operand = Box::new(self.lower_instruction(operand, Vec::new())?);
+                Ok(match op {
+                    UnOp::Neg => muni_ir::Instruction::UnaryOp { op: muni_ir::UnOp::Neg, operand: lowered_operand },
+                    UnOp::Not => muni_ir::Instruction::UnaryOp { op: muni_ir::UnOp::Not, operand: lowered_operand },
+                })
+            },
             Expression::BinaryOp { op, left, right } => {
                 let lowered_left = Box::new(self.lower_instruction(left, Vec::new())?);
                 let lowered_right = Box::new(self.lower_instruction(right, Vec::new())?);
@@ -301,6 +346,31 @@ impl Program {
                 Ok(muni_ir::Instruction::VarGet { name: name.clone() })
             },
             Expression::Call { function, args } => {
+                match function.as_str() {
+                    "alloc" => {
+                        if args.len() != 1 {
+                            return Err(errors::CompileError::IRLoweringError("alloc function must have exactly one argument".to_string()));
+                        }
+                        let size = Box::new(self.lower_instruction(&args[0], Vec::new())?);
+                        return Ok(muni_ir::Instruction::Alloc { size });
+                    },
+                    "load" => {
+                        if args.len() != 1 {
+                            return Err(errors::CompileError::IRLoweringError("load function must have exactly one argument".to_string()));
+                        }
+                        let address = Box::new(self.lower_instruction(&args[0], Vec::new())?);
+                        return Ok(muni_ir::Instruction::Load { address });
+                    },
+                    "store" => {
+                        if args.len() != 2 {
+                            return Err(errors::CompileError::IRLoweringError("store function must have exactly two arguments".to_string()));
+                        }
+                        let address = Box::new(self.lower_instruction(&args[0], Vec::new())?);
+                        let value = Box::new(self.lower_instruction(&args[1], Vec::new())?);
+                        return Ok(muni_ir::Instruction::Store { address, value });
+                    },
+                    _ => {}
+                }
                 let lowered_args = args.iter().map(|arg| self.lower_instruction(arg, Vec::new())).collect::<Result<Vec<_>, _>>()?;
                 Ok(muni_ir::Instruction::Call { function_name: function.clone(), args: lowered_args })
             },
@@ -387,6 +457,8 @@ impl Program {
             },
         }
     }
+
+    
 }
 
 
@@ -448,5 +520,33 @@ impl TypedNode {
             TypedNode::Statement { statement: _ } => None,
             TypedNode::Expression { expression: _, result_type } => Some(result_type.clone()),
         }
+    }
+}
+
+impl Module {
+    fn function_returns_value(&self, function_name: &str) -> bool {
+        // Check user-defined functions
+        if let Some(func) = self.get_local_function(function_name) {
+            return func.return_type.is_some();
+        }
+        
+        // Check host imports
+        if let Some(host) = self.get_host_import(function_name) {
+            return host.return_type.is_some();
+        }
+        
+        // Special built-in functions
+        match function_name {
+            "store" | "alloc" | "load" => false, // These are special, handled separately
+            _ => true, // Default: assume it returns a value
+        }
+    }
+
+    fn get_local_function(&self, name: &str) -> Option<&Function> {
+        self.functions.iter().find(|f| f.name == name)
+    }
+
+    fn get_host_import(&self, name: &str) -> Option<&HostImport> {
+        self.host_imports.iter().find(|h| h.function == name)
     }
 }

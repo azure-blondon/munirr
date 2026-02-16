@@ -113,6 +113,9 @@ pub enum Instruction {
     I32Mul,
     I32DivS,
     I32Eq,
+
+    I32Store { align: u32, offset: u32 },
+    I32Load { align: u32, offset: u32 },
     
     LocalGet { id: LocalIndex },
     LocalSet { id: LocalIndex },
@@ -121,6 +124,7 @@ pub enum Instruction {
     
     Nop,
     Unreachable,
+    Drop,
     Block { block_type: BlockType, body: Vec<Instruction> },
     Loop { block_type: BlockType, body: Vec<Instruction> },
     Br { label_index: LabelIndex },
@@ -160,44 +164,34 @@ fn encode_u32(mut n: u32, out: &mut Vec<u8>) {
         }
     }
 }
-fn encode_i32(n: i32, out: &mut Vec<u8>) {
-    let mut more = true;
-    let mut value = n as u32;
-    let size = 32;
 
-    while more {
-        let mut byte = (value & 0x7F) as u8;
-        value >>= 7;
-
-        let sign_bit = (byte & 0x40) != 0;
-
-        if (value == 0 && !sign_bit) || (value == (!0 >> (size - 7)) && sign_bit) {
-            more = false;
+fn encode_i32(mut n: i32, out: &mut Vec<u8>) {
+    loop {
+        let byte = (n & 0x7F) as u8;
+        n >>= 7;
+        
+        // Check if we're done: n is 0 and sign bit is 0, or n is -1 and sign bit is 1
+        if (n == 0 && (byte & 0x40) == 0) || (n == -1 && (byte & 0x40) != 0) {
+            out.push(byte);
+            break;
         } else {
-            byte |= 0x80;
+            out.push(byte | 0x80);
         }
-
-        out.push(byte);
     }
 }
-fn encode_i64(n: i64, out: &mut Vec<u8>) {
-    let mut more = true;
-    let mut value = n as u64;
-    let size = 64;
 
-    while more {
-        let mut byte = (value & 0x7F) as u8;
-        value >>= 7;
-
-        let sign_bit = (byte & 0x40) != 0;
-
-        if (value == 0 && !sign_bit) || (value == (!0 >> (size - 7)) && sign_bit) {
-            more = false;
+fn encode_i64(mut n: i64, out: &mut Vec<u8>) {
+    loop {
+        let byte = (n & 0x7F) as u8;
+        n >>= 7;
+        
+        // Check if we're done: n is 0 and sign bit is 0, or n is -1 and sign bit is 1
+        if (n == 0 && (byte & 0x40) == 0) || (n == -1 && (byte & 0x40) != 0) {
+            out.push(byte);
+            break;
         } else {
-            byte |= 0x80;
+            out.push(byte | 0x80);
         }
-
-        out.push(byte);
     }
 }
 
@@ -411,6 +405,17 @@ impl Emittable for Instruction {
             Instruction::I32DivS => out.push(0x6D),
             Instruction::I32Eq => out.push(0x46),
 
+            Instruction::I32Store { align, offset } => {
+                out.push(0x36);
+                encode_u32(align.trailing_zeros(), out);
+                encode_u32(*offset as u32, out);
+            }
+            Instruction::I32Load { align, offset } => {
+                out.push(0x28);
+                encode_u32(align.trailing_zeros(), out);
+                encode_u32(*offset as u32, out);
+            },
+
             Instruction::LocalGet { id } => {
                 out.push(0x20);
                 encode_u32(*id, out);
@@ -429,6 +434,7 @@ impl Emittable for Instruction {
             }
             Instruction::Nop => out.push(0x01),
             Instruction::Unreachable => out.push(0x00),
+            Instruction::Drop => out.push(0x1A),
             Instruction::Block { block_type, body } => {
                 out.push(0x02);
                 match block_type {

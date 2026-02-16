@@ -18,9 +18,10 @@ pub fn compile_muni_to_wasm(muni_code: String) -> Result<Vec<u8>, errors::Compil
     let lexer = lexer::Lexer::new(muni_code);
     let mut parser = parser::Parser::new(lexer);
     let ast = parser.parse_program()?;
-    let modules: Vec<muni_ir::Module> = ast.lower()?;
-    let muni_ir = modules.get(0).ok_or(errors::CompileError::IRLoweringError("No modules in program".to_string()))?;
+    let mut modules: Vec<muni_ir::Module> = ast.lower()?;
+    let mut muni_ir = modules.remove(0);
     let mut wasm_ir = muni_ir.lower();
+    //println!("WASM IR: {:#?}", wasm_ir);
     let mut out = Vec::new();
     wasm_ir.emit(&mut out);
     Ok(out)
