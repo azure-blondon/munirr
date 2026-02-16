@@ -1,10 +1,8 @@
-use std::{collections::HashMap};
-
 use crate::wasm_ir::{self, ExportDescriptor};
 
 #[derive(Debug)]
 pub struct Module {
-    pub functions: Vec<Function>,
+    pub local_functions: Vec<Function>,
     pub globals: Vec<Global>,
     pub host_imports: Vec<HostImport>,
 }
@@ -96,33 +94,24 @@ impl Module {
     pub fn lower(&self) -> wasm_ir::Module {
         let mut module = wasm_ir::Module {
             types: Vec::new(),
-            functions: Vec::new(),
             globals: Vec::new(),
+            memories: Vec::new(),
+            functions: Vec::new(),
             host_imports: Vec::new(),
             exports: Vec::new(),
         };
         
+        let mut function_indices: Vec<String> = Vec::new();
+
         for host_import in &self.host_imports {
-            module.host_imports.push(wasm_ir::HostImport {
-                module: host_import.module.clone(),
-                function: host_import.function.clone(),
-                func_type: wasm_ir::FunctionType {
-                    inputs: host_import.params.iter().map(|param| match self.lower_type(param) {
-                        wasm_ir::Type::ValueType { value_type } => value_type,
-                    }).collect(),
-                    outputs: match &host_import.return_type {
-                        None => vec![],
-                        Some(ty) => vec![match self.lower_type(ty) {
-                            wasm_ir::Type::ValueType { value_type } => value_type,
-                        }],
-                    },
-                },
-            });
+            function_indices.push(host_import.function.clone());
         }
 
 
+        for function in &self.local_functions {
+            function_indices.push(function.name.clone());
+        }
 
-        let function_indices: HashMap<String, usize> = self.functions.iter().enumerate().map(|(idx, func)| (func.name.clone(), idx)).collect();
 
         for global in &self.globals {
             module.globals.push(wasm_ir::Global {
@@ -147,36 +136,47 @@ impl Module {
         }
 
 
-        for (idx, function) in self.functions.iter().enumerate() {
-            // Build type for this function
-            let outputs = match &function.return_type {
-                None => vec![],
-                Some(ty) => vec![match self.lower_type(ty) {
-                    wasm_ir::Type::ValueType { value_type } => value_type,
-                }],
-            };
-            
-            module.types.push(wasm_ir::FunctionType {
-                inputs: function.params.iter().map(|(_, ty)| {
-                    match self.lower_type(ty) {
-                        wasm_ir::Type::ValueType { value_type } => value_type,
-                    }
-                }).collect(),
-                outputs,
-            });
-            
-            module.functions.push(wasm_ir::Function {
-                function_type: wasm_ir::FunctionType {
-                    inputs: function.params.iter().map(|(_, ty)| match self.lower_type(ty) {
-                        wasm_ir::Type::ValueType { value_type } => value_type,
-                    }).collect(),
-                    outputs: match &function.return_type {
-                        None => vec![],
-                        Some(ty) => vec![match self.lower_type(ty) {
-                            wasm_ir::Type::ValueType { value_type } => value_type,
-                        }],
+        for (idx, function) in function_indices.iter().enumerate() {
+            let function = match self.get_local_function(function) {
+                Some(func) => func,
+                None => match self.get_host_import(function) {
+                    Some(host) => {
+                        module.host_imports.push(wasm_ir::HostImport {
+                            module: host.module.clone(),
+                            function: host.function.clone(),
+                            type_index: self.find_or_create_type_index(&mut module.types, &wasm_ir::FunctionType {
+                                inputs: host.params.iter().map(|ty| match self.lower_type(ty) {
+                                    wasm_ir::Type::ValueType { value_type } => value_type,
+                                }).collect(),
+                                outputs: match &host.return_type {
+                                    None => vec![],
+                                    Some(ty) => vec![match self.lower_type(ty) {
+                                        wasm_ir::Type::ValueType { value_type } => value_type,
+                                    }],
+                                },
+                            }),
+                        });
+                        continue;
                     },
+                    None => panic!("Function not found: {}", function),
+                }
+            };
+
+            let func_type = wasm_ir::FunctionType {
+                inputs: function.params.iter().map(|(_, ty)| match self.lower_type(ty) {
+                    wasm_ir::Type::ValueType { value_type } => value_type,
+                }).collect(),
+                outputs: match &function.return_type {
+                    None => vec![],
+                    Some(ty) => vec![match self.lower_type(ty) {
+                        wasm_ir::Type::ValueType { value_type } => value_type,
+                    }],
                 },
+            };
+            let type_index = self.find_or_create_type_index(&mut module.types, &func_type);
+
+            module.functions.push(wasm_ir::Function {
+                type_index,
                 locals: function.locals.iter().map(|(_, ty)| match self.lower_type(ty) {
                     wasm_ir::Type::ValueType { value_type } => value_type,
                 }).collect(),
@@ -186,11 +186,22 @@ impl Module {
             if function.export {
                 module.exports.push(wasm_ir::Export {
                     name: function.name.clone(),
-                    descriptor: ExportDescriptor::FunctionIndex(idx as u32),
+                    descriptor: ExportDescriptor::FunctionIndex(self.get_function_local_index(&function.name).unwrap() as u32),
                 });
             }
         }
 
+
+        // TODO handle memory and other module components
+        module.memories.push(wasm_ir::Memory {
+            min_pages: 1,
+            max_pages: None,
+        });
+
+        module.exports.push(wasm_ir::Export {
+            name: "memory".to_string(),
+            descriptor: ExportDescriptor::MemoryIndex(0),
+        });
         
         module
     }
@@ -199,7 +210,7 @@ impl Module {
     fn lower_instruction(
         &self,
         instruction: &TypedInstruction,
-        function_indices: &HashMap<String, usize>,
+        function_indices: &Vec<String>,
         current_function_index: Option<usize>,
         label_stack: &mut Vec<(String, u32)>,
         next_label_id: &mut u32,
@@ -224,8 +235,9 @@ impl Module {
             },
             Instruction::VarGet { name } => {
                 if let Some(func_idx) = current_function_index {
-                    if self.get_locals_names(func_idx).iter().any(|local_name| local_name == name) {
-                        return vec![wasm_ir::Instruction::LocalGet { id: self.get_local_index(func_idx, name) }];
+                    let local_func_idx = func_idx - self.host_imports.len();
+                    if self.get_locals_names(local_func_idx).iter().any(|local_name| local_name == name) {
+                        return vec![wasm_ir::Instruction::LocalGet { id: self.get_local_index(local_func_idx, name) }];
                     }
                 }
 
@@ -233,9 +245,10 @@ impl Module {
             },
             Instruction::VarSet { name, value } => {
                 if let Some(func_idx) = current_function_index {
-                    if self.functions[func_idx].params.iter().any(|(param_name, _)| param_name == name) || self.functions[func_idx].locals.iter().any(|(local_name, _)| local_name == name) {
+                    let local_func_idx = func_idx - self.host_imports.len();
+                    if self.local_functions[local_func_idx].params.iter().any(|(param_name, _)| param_name == name) || self.local_functions[local_func_idx].locals.iter().any(|(local_name, _)| local_name == name) {
                         let mut instrs = self.lower_instruction(value, function_indices, current_function_index, label_stack, next_label_id);
-                        instrs.push(wasm_ir::Instruction::LocalSet { id: self.get_local_index(func_idx, name) });
+                        instrs.push(wasm_ir::Instruction::LocalSet { id: self.get_local_index(local_func_idx, name) });
                         return instrs;
                     }
                 }
@@ -304,15 +317,7 @@ impl Module {
                 instrs
             },
             Instruction::Call { function_name, args } => {
-                let function_index = if let Some(idx) = function_indices.get(function_name) {
-                    // Local function: import_count + local_index
-                    self.host_imports.len() as u32 + *idx as u32
-                } else if let Some(idx) = self.host_imports.iter().position(|import| import.function == *function_name) {
-                    // Imported function: just the import index
-                    idx as u32
-                } else {
-                    panic!("Function not found: {}", function_name);
-                };
+                let function_index = self.get_function_index(function_name, function_indices).unwrap();
                 
                 let mut instrs = Vec::new();
                 for arg in args {
@@ -342,15 +347,15 @@ impl Module {
         }
     }
 
-    fn get_local_index(&self, function_index: usize, name: &str) -> u32 {
+    fn get_local_index(&self, local_function_index: usize, name: &str) -> u32 {
         let mut index = 0;
-        for (param_name, _) in &self.functions[function_index].params {
+        for (param_name, _) in &self.local_functions[local_function_index].params {
             if param_name == name {
                 return index;
             }
             index += 1;
         }
-        for (local_name, _) in &self.functions[function_index].locals {
+        for (local_name, _) in &self.local_functions[local_function_index].locals {
             if local_name == name {
                 return index;
             }
@@ -360,12 +365,12 @@ impl Module {
         panic!("Local not found: {}", name);
     }
 
-    fn get_locals_names(&self, function_index: usize) -> Vec<String> {
+    fn get_locals_names(&self, local_function_index: usize) -> Vec<String> {
         let mut names = Vec::new();
-        for (param_name, _) in &self.functions[function_index].params {
+        for (param_name, _) in &self.local_functions[local_function_index].params {
             names.push(param_name.clone());
         }
-        for (local_name, _) in &self.functions[function_index].locals {
+        for (local_name, _) in &self.local_functions[local_function_index].locals {
             names.push(local_name.clone());
         }
         names
@@ -398,13 +403,38 @@ impl Module {
         false
     }
 
+    fn get_local_function(&self, name: &str) -> Option<&Function> {
+        self.local_functions.iter().find(|f| f.name == name)   
+    }
+
+    fn get_host_import(&self, name: &str) -> Option<&HostImport> {
+        self.host_imports.iter().find(|h| h.function == name)
+    }
+
+    fn get_function_local_index(&self, name: &str) -> Option<usize> {
+        self.local_functions.iter().position(|f| f.name == name)
+    }
+
+    fn get_function_index(&self, name: &str, function_indices: &Vec<String>) -> Option<u32> {
+        function_indices.iter().position(|n| n == name).map(|idx| idx as u32)
+    }
+
+    fn find_or_create_type_index(&self, types: &mut Vec<wasm_ir::FunctionType>, function_type: &wasm_ir::FunctionType) -> u32 {
+        if let Some(idx) = types.iter().position(|t| t == function_type) {
+            idx as u32
+        } else {
+            types.push(function_type.clone());
+            (types.len() - 1) as u32
+        }
+    }
+
     #[allow(unused)]
     pub fn display(&self) {
         println!("Module:");
         for global in &self.globals {
             println!("  Global: {} (mutable: {}, type: {:?}, export: {})", global.name, global.mutable, global.global_type, global.export);
         }
-        for function in &self.functions {
+        for function in &self.local_functions {
             println!("  Function: {} (export: {})", function.name, function.export);
             println!("    Params:");
             for (name, ty) in &function.params {

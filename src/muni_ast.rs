@@ -152,7 +152,7 @@ impl Program {
                 });
             }
             ir_modules.push(muni_ir::Module {
-                functions: ir_functions,
+                local_functions: ir_functions,
                 globals: ir_globals,
                 host_imports: ir_host_imports,
             });

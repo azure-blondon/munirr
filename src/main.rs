@@ -1,6 +1,7 @@
 use wasmtime::{Engine, Linker, Store};
+use wasmtime_wasi::{WasiCtxBuilder};
+mod wasm_ir;use wasmtime_wasi::p1::{self, WasiP1Ctx};
 
-mod wasm_ir;
 mod muni_ir;
 mod muni_ast;
 mod parser;
@@ -26,6 +27,37 @@ pub fn compile_muni_to_wasm(muni_code: String) -> Result<Vec<u8>, errors::Compil
 }
 
 
+pub fn run_wasm(wasm_bytes: Vec<u8>) -> anyhow::Result<()> {
+    let engine = Engine::default();
+    let module = wasmtime::Module::new(&engine, wasm_bytes)?;
+    
+    // Create a Linker and add imports
+    let mut linker: Linker<WasiP1Ctx> = Linker::new(&engine);
+    
+    p1::add_to_linker_sync(&mut linker, |state| state)?;
+    
+    let pre = linker.instantiate_pre(&module)?;
+    
+    let wasi = WasiCtxBuilder::new()
+        .inherit_stdio()
+        .inherit_args()
+        .build_p1();
+
+    
+    linker.func_wrap("env", "print", |arg: i32| {
+        println!("print: {}", arg);
+    })?;
+    
+    let mut store = Store::new(&engine, wasi);
+    let instance = pre.instantiate(&mut store)?;
+    
+    let main = instance.get_typed_func::<(), ()>(&mut store, "_start")?;
+    let result = main.call(&mut store, ())?;
+    println!("main returned: {:?}", result);
+    Ok(())
+}
+
+
 
 
 fn main() -> anyhow::Result<()> {
@@ -46,27 +78,6 @@ fn main() -> anyhow::Result<()> {
     let muni_code = std::fs::read_to_string(input_path)?;
     let wasm_bytes = compile_muni_to_wasm(muni_code)?;
     std::fs::write(output_path, wasm_bytes)?;
-
-    let engine = Engine::default();
-    let module = wasmtime::Module::from_file(&engine, output_path)?;
-    let mut store = Store::new(&engine, ());
     
-    // Create a Linker and add imports
-    let mut linker = Linker::new(&engine);
-    
-    linker.func_wrap("wasi_unstable", "proc_exit", |arg: i32| -> i32 {
-        std::process::exit(arg);
-    })?;
-
-    linker.func_wrap("env", "print", |arg: i32| {
-        println!("print: {}", arg);
-    })?;
-    
-    // Instantiate with the linker
-    let instance = linker.instantiate(&mut store, &module)?;
-    
-    let main = instance.get_typed_func::<(), i32>(&mut store, "main")?;
-    let result = main.call(&mut store, ())?;
-    println!("main returned: {}", result);
     Ok(())
 }

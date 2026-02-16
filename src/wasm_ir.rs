@@ -3,19 +3,21 @@ pub type FunctionIndex = u32;
 pub type LocalIndex = u32;
 pub type GlobalIndex = u32;
 pub type LabelIndex = u32;
+pub type MemoryIndex = u32;
 
 #[derive(Debug, Clone)]
 pub struct Module {
     pub types: Vec<FunctionType>,
-    pub functions: Vec<Function>,
     pub globals: Vec<Global>,
+    pub memories: Vec<Memory>,
+    pub functions: Vec<Function>,
     pub host_imports: Vec<HostImport>,
     pub exports: Vec<Export>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Function {
-    pub function_type: FunctionType,
+    pub type_index: TypeIndex,
     pub locals: Vec<ValueType>,
     pub body: Expression,
 }
@@ -33,10 +35,16 @@ pub enum Mutability {
 }
 
 #[derive(Debug, Clone)]
+pub struct Memory {
+    pub min_pages: u32,
+    pub max_pages: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
 pub struct HostImport {
     pub module: String,
     pub function: String,
-    pub func_type: FunctionType,
+    pub type_index: TypeIndex,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +57,7 @@ pub struct Export {
 pub enum ExportDescriptor {
     FunctionIndex(FunctionIndex),
     GlobalIndex(GlobalIndex),
+    MemoryIndex(MemoryIndex),
 }
 
 #[derive(Debug, Clone)]
@@ -61,7 +70,7 @@ pub enum ValueType {
     NumType { num_type: NumType },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionType {
     pub inputs: ResultType,
     pub outputs: ResultType,
@@ -150,6 +159,27 @@ fn encode_u32(mut n: u32, out: &mut Vec<u8>) {
         }
     }
 }
+fn encode_i32(n: i32, out: &mut Vec<u8>) {
+    let mut more = true;
+    let mut value = n as u32;
+    let size = 32;
+
+    while more {
+        let mut byte = (value & 0x7F) as u8;
+        value >>= 7;
+
+        let sign_bit = (byte & 0x40) != 0;
+
+        if (value == 0 && !sign_bit) || (value == (!0 >> (size - 7)) && sign_bit) {
+            more = false;
+        } else {
+            byte |= 0x80;
+        }
+
+        out.push(byte);
+    }
+}
+
 
 fn write_section(section_id: u8, payload: &[u8], out: &mut Vec<u8>) {
     out.push(section_id);
@@ -165,7 +195,6 @@ impl Emittable for Module {
         out.extend_from_slice(&[0x00, 0x61, 0x73, 0x6d]); // "\0asm"
         out.extend_from_slice(&[0x01, 0x00, 0x00, 0x00]); // version 1
 
-        self.prepare();
 
         // Type Section
         let mut type_section = Vec::new();
@@ -191,8 +220,7 @@ impl Emittable for Module {
             // Import kind: 0x00 = function
             import_section.push(0x00);
             
-            let type_index = self.find_or_create_type_index(&import.func_type);
-            encode_u32(type_index, &mut import_section);
+            encode_u32(import.type_index, &mut import_section);
         }
         write_section(2, &import_section, out);
 
@@ -201,11 +229,32 @@ impl Emittable for Module {
         let mut function_section = Vec::new();
         encode_u32(self.functions.len() as u32, &mut function_section);
         for func in &self.functions {
-            encode_u32(self.clone().find_or_create_type_index(&func.function_type), &mut function_section);
+            encode_u32(func.type_index, &mut function_section);
         }
         write_section(3, &function_section, out);
         
+        
+        // Memory Section
+        let mut memory_section = Vec::new();
+        encode_u32(self.memories.len() as u32, &mut memory_section);
 
+        for memory in &self.memories {
+            match memory.max_pages {
+                Some(max) => {
+                    encode_u32(0x01, &mut memory_section); // flags (has max)
+                    encode_u32(memory.min_pages, &mut memory_section);
+                    encode_u32(max, &mut memory_section);
+                }
+                None => {
+                    encode_u32(0x00, &mut memory_section); // flags (no max)
+                    encode_u32(memory.min_pages, &mut memory_section);
+                }
+            }
+        }
+
+        write_section(5, &memory_section, out);
+
+        
         // Global Section
         let mut global_section = Vec::new();
         encode_u32(self.globals.len() as u32, &mut global_section);
@@ -227,6 +276,10 @@ impl Emittable for Module {
                     // Adjust index: imports come first in the function index space
                     let adjusted_index = self.host_imports.len() as u32 + index;
                     encode_u32(adjusted_index, &mut export_section);
+                }
+                ExportDescriptor::MemoryIndex(index) => {
+                    export_section.push(0x02); // Memory export
+                    encode_u32(*index, &mut export_section);
                 }
                 ExportDescriptor::GlobalIndex(index) => {
                     export_section.push(0x03); // Global export
@@ -462,36 +515,6 @@ impl Emittable for Global {
 
 impl Module {
 
-
-    pub fn prepare(&mut self) {
-        // Add all import types to the types section first
-        let func_types: Vec<_> = self.host_imports.iter().map(|import| import.func_type.clone()).collect();
-        for func_type in func_types {
-            self.find_or_create_type_index(&func_type);
-        }
-        
-        // Add all function types
-        let func_types: Vec<_> = self.functions.iter().map(|func| {
-            func.function_type.clone()
-        }).collect();
-        for func_type in func_types {
-            self.find_or_create_type_index(&func_type);
-        }
-    }
-
-
-    fn find_or_create_type_index(&mut self, func_type: &FunctionType) -> u32 {
-        // Find matching type in self.types
-        for (i, existing_type) in self.types.iter().enumerate() {
-            if existing_type.inputs == func_type.inputs && existing_type.outputs == func_type.outputs {
-                return i as u32;
-            }
-        }
-        // If not found, create new type
-        let new_index = self.types.len() as u32;
-        self.types.push(func_type.clone());
-        new_index
-    }
 
 
 
