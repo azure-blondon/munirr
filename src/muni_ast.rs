@@ -4,7 +4,7 @@ use rand;
 
 #[derive(Debug)]
 pub struct Program {
-    pub modules: Vec<Module>,
+    pub module: Module,
 }
 
 #[derive(Debug)]
@@ -22,6 +22,7 @@ pub struct Function {
     pub return_type: Option<Type>,
     pub body: Vec<TypedNode>,
     pub export: bool,
+    pub position: errors::Position,
 }
 
 #[derive(Debug)]
@@ -31,6 +32,7 @@ pub struct Global {
     pub mutable: bool,
     pub init: TypedNode,
     pub export: bool,
+    pub position: errors::Position,
 }
 
 #[derive(Debug)]
@@ -39,50 +41,50 @@ pub struct HostImport {
     pub function: String,
     pub params: Vec<Type>,
     pub return_type: Option<Type>,
-}
-
-#[derive(Debug, Clone)]
-pub enum Type {
-    I32,
-    I64,
-    F32,
-    F64,
-    Integer,
-    Float,
+    pub position: errors::Position,
 }
 
 #[derive(Debug)]
 #[allow(dead_code)]
 pub enum TypeDef {
-    Alias { name: String, ty: Type },
+    Alias { name: String, ty: Type, position: errors::Position },
 }
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Type {
+    I32,
+    I64,
+    F32,
+    F64,
+}
+
 
 #[derive(Debug, Clone)]
 pub enum TypedNode {
     Statement { statement: Statement },
-    Expression { expression: Expression, result_type: Type },
+    Expression { expression: Expression, result_type: Option<Type> },
 }
 
 
 #[derive(Debug, Clone)]
 pub enum Statement {
-    If { condition: Box<TypedNode>, then_body: Vec<TypedNode>, else_body: Vec<TypedNode> },
-    Return { value: Option<Box<TypedNode>> },
-    Expression { expression: Expression },
-    VariableDeclaration { name: String, ty: Type, init: Option<Box<TypedNode>> },
-    Block { body: Vec<TypedNode> },
-    Loop { body: Vec<TypedNode> },
-    Break,
-    Continue,
+    If { condition: Box<TypedNode>, then_body: Vec<TypedNode>, else_body: Vec<TypedNode>, position: errors::Position },
+    Return { value: Option<Box<TypedNode>>, position: errors::Position },
+    Expression { expression: Expression, position: errors::Position },
+    VariableDeclaration { name: String, ty: Type, init: Option<Box<TypedNode>>, position: errors::Position },
+    Block { body: Vec<TypedNode>, position: errors::Position },
+    Loop { body: Vec<TypedNode>, position: errors::Position },
+    Break { position: errors::Position },
+    Continue { position: errors::Position },
 }
 
 #[derive(Debug, Clone)]
 pub enum Expression {
-    BinaryOp { op: BinOp, left: Box<TypedNode>, right: Box<TypedNode> },
-    UnaryOp { op: UnOp, operand: Box<TypedNode> },
-    Literal { value: Literal },
-    Identifier { name: String },
-    Call { function: String, args: Vec<TypedNode> },
+    BinaryOp { op: BinOp, left: Box<TypedNode>, right: Box<TypedNode>, position: errors::Position },
+    UnaryOp { op: UnOp, operand: Box<TypedNode>, position: errors::Position },
+    Literal { value: Literal, position: errors::Position },
+    Identifier { name: String, position: errors::Position },
+    Call { function: String, args: Vec<TypedNode>, position: errors::Position },
 }
 
 #[derive(Debug, Clone)]
@@ -123,56 +125,78 @@ enum BlockType {
 
 
 impl Program {
-    pub fn lower(&self) -> Result<Vec<muni_ir::Module>, errors::CompileError> {
-        let mut ir_modules = Vec::new();
-        for module in &self.modules {
-            let mut ir_functions = Vec::new();
-            let mut ir_host_imports = Vec::new();
-            for host_imports in &module.host_imports {
-                ir_host_imports.push(muni_ir::HostImport {
-                    module: host_imports.module.clone(),
-                    function: host_imports.function.clone(),
-                    params: host_imports.params.iter().map(|ty| self.lower_type(ty)).collect(),
-                    return_type: host_imports.return_type.as_ref().map(|ty| self.lower_type(ty)),
-                });
-            }
-
-            for function in &module.functions {
-                let ir_function = muni_ir::Function {
-                    name: function.name.clone(),
-                    params: function.params.iter().map(|(name, ty)| (name.clone(), self.lower_type(ty))).collect(),
-                    return_type: function.return_type.as_ref().map(|ty| self.lower_type(ty)),
-                    body: self.lower_instructions(&function.body, Vec::new())?,
-                    export: function.export,
-                    locals: function.locals().iter().map(|(name, ty)| (name.clone(), self.lower_type(ty))).collect(),
-            
-                };
-                ir_functions.push(ir_function);
-            }
-            let mut ir_globals = Vec::new();
-            for global in &module.globals {
-                ir_globals.push(muni_ir::Global {
-                    name: global.name.clone(),
-                    global_type: self.lower_type(&global.ty),
-                    mutable: global.mutable,
-                    init: vec![self.lower_instruction(&global.init, Vec::new())?],
-                    export: global.export,
-                });
-            }
-            ir_modules.push(muni_ir::Module {
-                local_functions: ir_functions,
-                globals: ir_globals,
-                host_imports: ir_host_imports,
+    pub fn lower(&self) -> Result<muni_ir::Module, Vec<errors::CompileError>> {
+        let module = &self.module;
+        let mut errors = Vec::new();
+        let mut ir_functions = Vec::new();
+        let mut ir_host_imports = Vec::new();
+        for host_imports in &module.host_imports {
+            ir_host_imports.push(muni_ir::HostImport {
+                module: host_imports.module.clone(),
+                function: host_imports.function.clone(),
+                params: host_imports.params.iter().map(|ty| self.lower_type(ty)).collect(),
+                return_type: host_imports.return_type.as_ref().map(|ty| self.lower_type(ty)),
+                position: host_imports.position,
             });
-            for type_def in &module.types {
-                match type_def {
-                    TypeDef::Alias { name: _, ty: _ } => {
-                        // TODO handle type aliases
-                    },
-                }
+        }
+
+        for function in &module.functions {
+            let ir_function = muni_ir::Function {
+                name: function.name.clone(),
+                params: function.params.iter().map(|(name, ty)| (name.clone(), self.lower_type(ty))).collect(),
+                return_type: function.return_type.as_ref().map(|ty| self.lower_type(ty)),
+                body: self.lower_instructions(&function.body, Vec::new()).unwrap_or_else(|e| {
+                    errors.push(e);
+                    Vec::new()
+                }),
+                export: function.export,
+                locals: function.locals().iter().map(|(name, ty)| (name.clone(), self.lower_type(ty))).collect(),
+                position: function.position,
+        
+            };
+            ir_functions.push(ir_function);
+        }
+        let mut ir_globals = Vec::new();
+        for global in &module.globals {
+            ir_globals.push(muni_ir::Global {
+                name: global.name.clone(),
+                global_type: self.lower_type(&global.ty),
+                mutable: global.mutable,
+                init: vec![self.lower_instruction(&global.init, Vec::new()).unwrap_or_else(|e| {
+                    errors.push(e);
+                    muni_ir::TypedInstruction {
+                        instruction: muni_ir::Instruction::Const { value: match global.ty {
+                            Type::I32 => muni_ir::Value::I32(0),
+                            Type::I64 => muni_ir::Value::I64(0),
+                            Type::F32 => muni_ir::Value::F32(0.0),
+                            Type::F64 => muni_ir::Value::F64(0.0),
+                        } },
+                        result_type: Some(self.lower_type(&global.ty)),
+                        position: global.position,
+                    }
+                })],
+                export: global.export,
+                position: global.position,
+            });
+        }
+        for type_def in &module.types {
+            match type_def {
+                TypeDef::Alias { name: _, ty: _, position: _ } => {
+                    // TODO handle type aliases
+                },
             }
         }
-        Ok(ir_modules)
+        let module = muni_ir::Module {
+            local_functions: ir_functions,
+            host_imports: ir_host_imports,
+            globals: ir_globals,
+        };
+            
+        if errors.is_empty() {
+            Ok(module)
+        } else {
+            Err(errors)
+        }
     }
 
     fn lower_type(&self, ty: &Type) -> muni_ir::Type {
@@ -181,8 +205,6 @@ impl Program {
             Type::I64 => muni_ir::Type::I64,
             Type::F32 => muni_ir::Type::F32,
             Type::F64 => muni_ir::Type::F64,
-            Type::Integer => muni_ir::Type::I32, // TODO: distinguish between different integer types
-            Type::Float => muni_ir::Type::F32, // TODO: distinguish between different
         }
     }
 
@@ -195,31 +217,35 @@ impl Program {
     }
 
     fn lower_instruction(&self, instruction: &TypedNode, mut block_stack: Vec<BlockType>) -> Result<muni_ir::TypedInstruction, errors::CompileError> {
+        let mut instr_pos = errors::Position { line: 0, column: 0, index: 0 };
         let instr = match instruction {
             TypedNode::Statement { statement } => match statement {
-                Statement::If { condition, then_body, else_body } => {
+                Statement::If { condition, then_body, else_body, position } => {
+                    instr_pos = *position;
                     let condition = Box::new(self.lower_instruction(condition, block_stack.clone())?);
                     block_stack.push(BlockType::If);
                     let then_body = self.lower_instructions(then_body, block_stack.clone())?;
                     let else_body = self.lower_instructions(else_body, block_stack.clone())?;
                     muni_ir::Instruction::If { condition, then_body, else_body }
                 },
-                Statement::Return { value } => {
+                Statement::Return { value, position } => {
+                    instr_pos = *position;
                     let value: Option<Box<muni_ir::TypedInstruction>> = value.as_ref().and_then(|v| self.lower_instruction(v, block_stack.clone()).map(Box::new).ok());
                     muni_ir::Instruction::Return { value }
                 },
-                Statement::Expression { expression } => {
+                Statement::Expression { expression, position } => {
+                    instr_pos = *position;
                     let expr_instr = self.lower_expression(expression)?;
                     
                     let needs_drop = match expression {
-                        Expression::BinaryOp { op: _, left: _, right: _ } => true,
-                        Expression::UnaryOp { op: _, operand: _ } => true,
-                        Expression::Literal { value: _ } => true,
-                        Expression::Identifier { name: _ } => true,
-                        Expression::Call { function: function_name, args: _ } if function_name == "store" => false,
-                        Expression::Call { function: function_name, args: _ }  => {
+                        Expression::BinaryOp { op: _, left: _, right: _, position: _ } => true,
+                        Expression::UnaryOp { op: _, operand: _, position: _ } => true,
+                        Expression::Literal { value: _, position: _ } => true,
+                        Expression::Identifier { name: _, position: _ } => true,
+                        Expression::Call { function: function_name, args: _, position: _ } if function_name == "store" => false,
+                        Expression::Call { function: function_name, args: _, position: _ }  => {
                             // Check if the function returns a value
-                            self.modules.iter().any(|module| module.function_returns_value(function_name))
+                            self.module.function_returns_value(function_name)
                         }
                     };
                     
@@ -230,10 +256,12 @@ impl Program {
                                 muni_ir::TypedInstruction {
                                     instruction: expr_instr,
                                     result_type: None,
+                                    position: *position,
                                 },
                                 muni_ir::TypedInstruction {
                                     instruction: muni_ir::Instruction::Drop,
                                     result_type: None,
+                                    position: *position,
                                 }
                             ]
                         }
@@ -241,7 +269,8 @@ impl Program {
                         expr_instr
                     }
                 },
-                Statement::VariableDeclaration { name, ty, init } => {
+                Statement::VariableDeclaration { name, ty, init, position } => {
+                    instr_pos = *position;
                     let init = init.as_ref().and_then(|init| self.lower_instruction(init, block_stack.clone()).map(Box::new).ok());
                     let default = Box::new(muni_ir::TypedInstruction {
                         instruction: muni_ir::Instruction::Const { value: match ty {
@@ -249,19 +278,20 @@ impl Program {
                             Type::I64 => muni_ir::Value::I64(0),
                             Type::F32 => muni_ir::Value::F32(0.0),
                             Type::F64 => muni_ir::Value::F64(0.0),
-                            Type::Integer => muni_ir::Value::I32(0),
-                            Type::Float => muni_ir::Value::F32(0.0),
                         } },
                         result_type: Some(self.lower_type(ty)),
+                        position: *position,
                     });
                     muni_ir::Instruction::VarSet { name: name.clone(), value: init.unwrap_or(default) }
                 },
-                Statement::Block { body } => {
+                Statement::Block { body, position } => {
+                    instr_pos = *position;
                     block_stack.push(BlockType::Block);
                     let body = self.lower_instructions(body, block_stack.clone())?;
                     muni_ir::Instruction::Block { label: format!("block_{}", rand::random::<u64>()), body }
                 },
-                Statement::Loop { body } => {
+                Statement::Loop { body, position } => {
+                    instr_pos = *position;
                     block_stack.push(BlockType::Loop);
                     let body = self.lower_instructions(body, block_stack.clone())?;
                     
@@ -274,19 +304,22 @@ impl Program {
                                 instrs.push(muni_ir::TypedInstruction {
                                     instruction: muni_ir::Instruction::Break { value: 0 },
                                     result_type: None,
+                                    position: *position,
                                 });
                                 instrs
                             } },
                             result_type: None,
+                            position: *position,
                         },
                     ] }
 
                 },
-                Statement::Break => {
-                    // go back to last loop or block and break to it
+                Statement::Break { position } => {
+                    instr_pos = *position;
                     muni_ir::Instruction::Break { value: block_stack.iter().rev().enumerate().find(|(_, bt)| matches!(bt, BlockType::Loop | BlockType::Block)).map(|(idx, _)| idx).unwrap_or(0) as u32 + 1 }
                 },
-                Statement::Continue => {
+                Statement::Continue { position } => {
+                    instr_pos = *position;
                     muni_ir::Instruction::Break { value: block_stack.iter().rev().enumerate().find(|(_, bt)| matches!(bt, BlockType::Loop | BlockType::Block)).map(|(idx, _)| idx).unwrap_or(0) as u32 }
                 }
             },
@@ -301,20 +334,21 @@ impl Program {
                 Some(ty) => Some(self.lower_type(&ty)),
                 None => None,
             },
+            position: instr_pos,
         })
     
     }
 
     fn lower_expression(&self, expression: &Expression) -> Result<muni_ir::Instruction, errors::CompileError> {
         match expression {
-            Expression::UnaryOp { op, operand } => {
+            Expression::UnaryOp { op, operand, position: _ } => {
                 let lowered_operand = Box::new(self.lower_instruction(operand, Vec::new())?);
                 Ok(match op {
                     UnOp::Neg => muni_ir::Instruction::UnaryOp { op: muni_ir::UnOp::Neg, operand: lowered_operand },
                     UnOp::Not => muni_ir::Instruction::UnaryOp { op: muni_ir::UnOp::Not, operand: lowered_operand },
                 })
             },
-            Expression::BinaryOp { op, left, right } => {
+            Expression::BinaryOp { op, left, right, position } => {
                 let lowered_left = Box::new(self.lower_instruction(left, Vec::new())?);
                 let lowered_right = Box::new(self.lower_instruction(right, Vec::new())?);
 
@@ -330,40 +364,40 @@ impl Program {
                     BinOp::Eq => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Eq, left: lowered_left, right: lowered_right },
                     BinOp::Assign => {
                         let name = match left.as_ref() {
-                            TypedNode::Expression { expression: Expression::Identifier { name }, result_type: _ } => name.clone(),
-                            _ => return Err(errors::CompileError::IRLoweringError("Left-hand side of assignment must be an identifier".to_string())),
+                            TypedNode::Expression { expression: Expression::Identifier { name, position: _ }, result_type: _ } => name.clone(),
+                            _ => return Err(errors::CompileError::IRLoweringError("Left-hand side of assignment must be an identifier".to_string(), *position)),
                         };
                         muni_ir::Instruction::VarSet { name: name, value: lowered_right }
                     }
                 })
             },
-            Expression::Literal { value } => Ok(muni_ir::Instruction::Const { value: match value {
+            Expression::Literal { value, position: _ } => Ok(muni_ir::Instruction::Const { value: match value {
                 Literal::Integer(i) => muni_ir::Value::I32(*i as i32), // TODO: handle different integer types
                 Literal::Float(f) => muni_ir::Value::F32(*f as f32), // TODO: handle different float types
             } } ),
-            Expression::Identifier { name } => {
+            Expression::Identifier { name, position: _ } => {
 
                 Ok(muni_ir::Instruction::VarGet { name: name.clone() })
             },
-            Expression::Call { function, args } => {
+            Expression::Call { function, args, position } => {
                 match function.as_str() {
                     "alloc" => {
                         if args.len() != 1 {
-                            return Err(errors::CompileError::IRLoweringError("alloc function must have exactly one argument".to_string()));
+                            return Err(errors::CompileError::IRLoweringError("alloc function must have exactly one argument".to_string(), *position));
                         }
                         let size = Box::new(self.lower_instruction(&args[0], Vec::new())?);
                         return Ok(muni_ir::Instruction::Alloc { size });
                     },
                     "load" => {
                         if args.len() != 1 {
-                            return Err(errors::CompileError::IRLoweringError("load function must have exactly one argument".to_string()));
+                            return Err(errors::CompileError::IRLoweringError("load function must have exactly one argument".to_string(), *position));
                         }
                         let address = Box::new(self.lower_instruction(&args[0], Vec::new())?);
                         return Ok(muni_ir::Instruction::Load { address });
                     },
                     "store" => {
                         if args.len() != 2 {
-                            return Err(errors::CompileError::IRLoweringError("store function must have exactly two arguments".to_string()));
+                            return Err(errors::CompileError::IRLoweringError("store function must have exactly two arguments".to_string(), *position));
                         }
                         let address = Box::new(self.lower_instruction(&args[0], Vec::new())?);
                         let value = Box::new(self.lower_instruction(&args[1], Vec::new())?);
@@ -379,33 +413,32 @@ impl Program {
 
     #[allow(unused)]
     pub fn display(&self) {
-        for module in &self.modules {
-            println!("Module:");
-            for type_def in &module.types {
-                match type_def {
-                    TypeDef::Alias { name, ty } => {
-                        println!("  Type alias: {} = {:?}", name, ty);
-                    },
-                }
-            }
-            for global in &module.globals {
-                println!("  Global: {}: {:?} = {:?}", global.name, global.ty, global.init);
-            }
-            for function in &module.functions {
-                println!("  Function: {}({:?}) -> {:?} {{", function.name, function.params, function.return_type);
-                for instr in &function.body {
-                    self.display_instruction(instr, 4);
-                }
-                println!("  }}");
+        println!("Module:");
+        for type_def in &self.module.types {
+            match type_def {
+                TypeDef::Alias { name, ty, position } => {
+                    println!("  Type alias: {} = {:?}", name, ty);
+                },
             }
         }
+        for global in &self.module.globals {
+            println!("  Global: {}: {:?} = {:?}", global.name, global.ty, global.init);
+        }
+        for function in &self.module.functions {
+            println!("  Function: {}({:?}) -> {:?} {{", function.name, function.params, function.return_type);
+            for instr in &function.body {
+                self.display_instruction(instr, 4);
+            }
+            println!("  }}");
+        }
+        
     }
 
     pub fn display_instruction(&self, instruction: &TypedNode, indent: usize) {
         let indent_str = " ".repeat(indent);
         match instruction {
             TypedNode::Statement { statement } => match statement {
-                Statement::If { condition, then_body, else_body } => {
+                Statement::If { condition, then_body, else_body, position: _ } => {
                     println!("{}If:", indent_str);
                     self.display_instruction(condition, indent + 2);
                     println!("{}Then:", indent_str);
@@ -417,38 +450,38 @@ impl Program {
                         self.display_instruction(instr, indent + 4);
                     }
                 },
-                Statement::Return { value } => {
+                Statement::Return { value, position: _ } => {
                     println!("{}Return:", indent_str);
                     if let Some(value) = value {
                         self.display_instruction(value, indent + 2);
                     }
                 },
-                Statement::Expression { expression } => {
+                Statement::Expression { expression, position: _ } => {
                     println!("{}Expression: {:?}", indent_str, expression);
                 },
-                Statement::VariableDeclaration { name, ty, init } => {
+                Statement::VariableDeclaration { name, ty, init, position: _ } => {
                     println!("{}Variable declaration: {}: {:?}", indent_str, name, ty);
                     if let Some(init) = init {
                         println!("{}Initializer:", indent_str);
                         self.display_instruction(init, indent + 2);
                     }
                 },
-                Statement::Block { body } => {
+                Statement::Block { body, position: _ } => {
                     println!("{}Block:", indent_str);
                     for instr in body {
                         self.display_instruction(instr, indent + 2);
                     }
                 },
-                Statement::Loop { body } => {
+                Statement::Loop { body, position: _ } => {
                     println!("{}Loop:", indent_str);
                     for instr in body {
                         self.display_instruction(instr, indent + 2);
                     }
                 },
-                Statement::Break => {
+                Statement::Break { position: _ } => {
                     println!("{}Break", indent_str);
                 },
-                Statement::Continue => {
+                Statement::Continue { position: _ } => {
                     println!("{}Continue", indent_str);
                 }
             },
@@ -478,7 +511,7 @@ impl Function {
     pub fn collect_locals(&self, node: &TypedNode, locals: &mut Vec<(String, Type)>) {
         match node {
             TypedNode::Statement { statement } => match statement {
-                Statement::If { condition, then_body, else_body } => {
+                Statement::If { condition, then_body, else_body, position: _ } => {
                     self.collect_locals(condition, locals);
                     for instr in then_body {
                         self.collect_locals(instr, locals);
@@ -487,26 +520,26 @@ impl Function {
                         self.collect_locals(instr, locals);
                     }
                 },
-                Statement::Return { value: _ } => {},
-                Statement::Expression { expression: _ } => {},
-                Statement::VariableDeclaration { name, ty, init } => {
+                Statement::Return { value: _, position: _ } => {},
+                Statement::Expression { expression: _, position: _ } => {},
+                Statement::VariableDeclaration { name, ty, init, position: _ } => {
                     locals.push((name.clone(), ty.clone()));
                     if let Some(init) = init {
                         self.collect_locals(init, locals);
                     }
                 },
-                Statement::Block { body } => {
+                Statement::Block { body, position: _ } => {
                     for instr in body {
                         self.collect_locals(instr, locals);
                     }
                 },
-                Statement::Loop { body } => {
+                Statement::Loop { body, position: _ } => {
                     for instr in body {
                         self.collect_locals(instr, locals);
                     }
                 },
-                Statement::Break => {},
-                Statement::Continue => {},
+                Statement::Break { position: _ } => {},
+                Statement::Continue { position: _ } => {},
             },
             TypedNode::Expression { expression: _, result_type: _ } => {},
         }
@@ -518,7 +551,7 @@ impl TypedNode {
     pub fn result_type(&self) -> Option<Type> {
         match self {
             TypedNode::Statement { statement: _ } => None,
-            TypedNode::Expression { expression: _, result_type } => Some(result_type.clone()),
+            TypedNode::Expression { expression: _, result_type } => result_type.clone(),
         }
     }
 }
@@ -548,5 +581,35 @@ impl Module {
 
     fn get_host_import(&self, name: &str) -> Option<&HostImport> {
         self.host_imports.iter().find(|h| h.function == name)
+    }
+}
+
+
+
+
+impl Statement {
+    pub fn position(&self) -> errors::Position {
+        match self {
+            Statement::If { position, .. } => *position,
+            Statement::Return { position, .. } => *position,
+            Statement::Expression { position, .. } => *position,
+            Statement::VariableDeclaration { position, .. } => *position,
+            Statement::Block { position, .. } => *position,
+            Statement::Loop { position, .. } => *position,
+            Statement::Break { position } => *position,
+            Statement::Continue { position } => *position,
+        }
+    }
+}
+
+impl Expression {
+    pub fn position(&self) -> errors::Position {
+        match self {
+            Expression::BinaryOp { position, .. } => *position,
+            Expression::UnaryOp { position, .. } => *position,
+            Expression::Literal { position, .. } => *position,
+            Expression::Identifier { position, .. } => *position,
+            Expression::Call { position, .. } => *position,
+        }
     }
 }

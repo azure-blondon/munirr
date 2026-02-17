@@ -5,6 +5,7 @@ mod wasm_ir;use wasmtime_wasi::p1::{self, WasiP1Ctx};
 mod muni_ir;
 mod muni_ast;
 mod parser;
+mod type_checker;
 mod lexer;
 mod errors;
 
@@ -14,16 +15,26 @@ use wasm_ir::Emittable;
 
 
 
-pub fn compile_muni_to_wasm(muni_code: String) -> Result<Vec<u8>, errors::CompileError> {
-    let lexer = lexer::Lexer::new(muni_code);
-    let mut parser = parser::Parser::new(lexer);
-    let ast = parser.parse_program()?;
-    let mut modules: Vec<muni_ir::Module> = ast.lower()?;
-    let mut muni_ir = modules.remove(0);
-    let mut wasm_ir = muni_ir.lower();
+pub fn compile_muni_to_wasm(muni_code: String) -> Result<Vec<u8>, Vec<errors::CompileError>> {
+    
+    let mut parser = parser::Parser::new();
+    parser.convert_tokens(&mut lexer::Lexer::new(muni_code))?;
+    
+    let mut ast = parser.parse_program()?;
+    
+    let mut type_checker = type_checker::TypeChecker::new();
+    type_checker.check_ast(&mut ast)?;
+    
+    let mut muni_ir = ast.lower()?;
+    
+    let mut wasm_ir = muni_ir.lower();  
+    
     //println!("WASM IR: {:#?}", wasm_ir);
+    
     let mut out = Vec::new();
+    
     wasm_ir.emit(&mut out);
+    
     Ok(out)
 }
 
@@ -77,8 +88,15 @@ fn main() -> anyhow::Result<()> {
     let input_path = &args[1];
     let output_path = &args[2];
     let muni_code = std::fs::read_to_string(input_path)?;
-    let wasm_bytes = compile_muni_to_wasm(muni_code)?;
-    std::fs::write(output_path, wasm_bytes)?;
+    let wasm_bytes = compile_muni_to_wasm(muni_code);
+    if let Err(errors) = &wasm_bytes {
+        eprintln!("Compilation failed with the following errors:");
+        for error in errors {
+            eprintln!("- {}", error);
+        }
+        return Ok(());
+    }
+    std::fs::write(output_path, wasm_bytes.unwrap())?;
     
     Ok(())
 }

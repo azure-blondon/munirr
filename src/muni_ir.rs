@@ -1,4 +1,5 @@
 use crate::wasm_ir::{self, ExportDescriptor};
+use crate::errors::Position;
 
 #[derive(Debug)]
 pub struct Module {
@@ -9,6 +10,7 @@ pub struct Module {
 
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct Function {
     pub name: String,
     pub params: Vec<(String, Type)>,
@@ -16,23 +18,28 @@ pub struct Function {
     pub body: Vec<TypedInstruction>,
     pub locals: Vec<(String, Type)>,
     pub export: bool,
+    pub position: Position,
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct Global {
     pub name: String,
     pub mutable: bool,
     pub global_type: Type,
     pub init: Vec<TypedInstruction>,
     pub export: bool,
+    pub position: Position,
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct HostImport {
     pub module: String,
     pub function: String,
     pub params: Vec<Type>,
     pub return_type: Option<Type>,
+    pub position: Position,
 }
 
 
@@ -45,9 +52,11 @@ pub enum Type {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct TypedInstruction {
     pub instruction: Instruction,
     pub result_type: Option<Type>,
+    pub position: Position,
 }
 
 #[derive(Debug, Clone)]
@@ -119,8 +128,10 @@ impl Module {
             init: vec![TypedInstruction {
                 instruction: Instruction::Const { value: Value::I32(1024) },
                 result_type: Some(Type::I32),
+                position: Position { line: 0, column: 0, index: 0 },
             }],
             export: false,
+            position: Position { line: 0, column: 0, index: 0 },
         });
 
         self.globals.push(Global {
@@ -130,8 +141,10 @@ impl Module {
             init: vec![TypedInstruction {
                 instruction: Instruction::Const { value: Value::I32(0) },
                 result_type: Some(Type::I32),
+                position: Position { line: 0, column: 0, index: 0 },
             }],
             export: false,
+            position: Position { line: 0, column: 0, index: 0 },
         });
         
 

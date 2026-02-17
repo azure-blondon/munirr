@@ -1,7 +1,7 @@
 // test suite for the compiler written in simple Rust, without using any testing framework
 
 use crate::compile_muni_to_wasm;
-
+use crate::errors;
 
 pub fn run_all_tests() {
     let test_dirs = std::fs::read_dir("tests").expect("Failed to read tests directory");
@@ -34,7 +34,7 @@ pub fn run_all_tests() {
                 failed += 1;
             }
             Err(e) => {
-                println!("! {} ({})", test_name, e);
+                println!("Error running test {}: {}", test_name, e.iter().map(|e| e.to_string()).collect::<Vec<_>>().join(", "));
                 errors += 1;
             }
         }
@@ -43,7 +43,7 @@ pub fn run_all_tests() {
     println!("\n{} passed, {} failed, {} errors", passed, failed, errors);
 }
 
-fn run_test(test_dir_name: &str) -> Result<bool, Box<dyn std::error::Error>> {
+fn run_test(test_dir_name: &str) -> Result<bool, Vec<errors::CompileError>> {
     let muni_code = std::fs::read_to_string(format!("tests/{test_dir_name}/test.mun"))
         .expect("Failed to read test.mun file");
     let expected_wasm = std::fs::read(format!("tests/{test_dir_name}/expected.wasm"))
