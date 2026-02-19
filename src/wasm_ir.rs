@@ -102,21 +102,57 @@ pub enum Instruction {
     F32Const { value: f32 },
     F64Const { value: f64 },
     I32Add,
-    I64Add,
-    F32Add,
-    F64Add,
-    I32Gt,
-    I32Ge,
-    I32Lt,
-    I32Le,
     I32Sub,
     I32Mul,
     I32DivS,
     I32Eq,
+    I32Gt,
+    I32Ge,
+    I32Lt,
+    I32Le,
+    
+    I64Add,
+    I64Sub,
+    I64Mul,
+    I64DivS,
+    I64Eq,
+    I64Gt,
+    I64Ge,
+    I64Lt,
+    I64Le,
+    
+    F32Add,
+    F32Sub,
+    F32Mul,
+    F32Div,
+    F32Eq,
+    F32Gt,
+    F32Ge,
+    F32Lt,
+    F32Le,
 
+    F64Add,
+    F64Sub,
+    F64Mul,
+    F64Div,
+    F64Eq,
+    F64Gt,
+    F64Ge,
+    F64Lt,
+    F64Le,
+    
     I32Store { align: u32, offset: u32 },
     I32Load { align: u32, offset: u32 },
     
+    I64Store { align: u32, offset: u32 },
+    I64Load { align: u32, offset: u32 },
+
+    F32Store { align: u32, offset: u32 },
+    F32Load { align: u32, offset: u32 },
+
+    F64Store { align: u32, offset: u32 },
+    F64Load { align: u32, offset: u32 },
+
     LocalGet { id: LocalIndex },
     LocalSet { id: LocalIndex },
     GlobalGet { id: GlobalIndex },
@@ -393,17 +429,45 @@ impl Emittable for Instruction {
                 out.extend_from_slice(&value.to_le_bytes());
             }
             Instruction::I32Add => out.push(0x6A),
-            Instruction::I64Add => out.push(0x7C),
-            Instruction::F32Add => out.push(0x92),
-            Instruction::F64Add => out.push(0xA0),
-            Instruction::I32Gt => out.push(0x4A),
-            Instruction::I32Ge => out.push(0x4E),
-            Instruction::I32Lt => out.push(0x4C),
-            Instruction::I32Le => out.push(0x4D),
             Instruction::I32Sub => out.push(0x6B),
             Instruction::I32Mul => out.push(0x6C),
             Instruction::I32DivS => out.push(0x6D),
             Instruction::I32Eq => out.push(0x46),
+            Instruction::I32Gt => out.push(0x4A),
+            Instruction::I32Ge => out.push(0x4E),
+            Instruction::I32Lt => out.push(0x4C),
+            Instruction::I32Le => out.push(0x4D),
+            
+            Instruction::I64Add => out.push(0x7C),
+            Instruction::I64Sub => out.push(0x7D),
+            Instruction::I64Mul => out.push(0x7E),
+            Instruction::I64DivS => out.push(0x7F),
+            Instruction::I64Eq => out.push(0x51),
+            Instruction::I64Gt => out.push(0x5A),
+            Instruction::I64Ge => out.push(0x5E),
+            Instruction::I64Lt => out.push(0x5C),
+            Instruction::I64Le => out.push(0x5D),
+            
+            Instruction::F32Add => out.push(0x92),
+            Instruction::F32Sub => out.push(0x93),
+            Instruction::F32Mul => out.push(0x94),
+            Instruction::F32Div => out.push(0x95),
+            Instruction::F32Eq => out.push(0x5B),
+            Instruction::F32Gt => out.push(0x5E),
+            Instruction::F32Ge => out.push(0x5F),
+            Instruction::F32Lt => out.push(0x5C),
+            Instruction::F32Le => out.push(0x5D),
+            
+            Instruction::F64Add => out.push(0xA0),
+            Instruction::F64Sub => out.push(0xA1),
+            Instruction::F64Mul => out.push(0xA2),
+            Instruction::F64Div => out.push(0xA3),
+            Instruction::F64Eq => out.push(0x61),
+            Instruction::F64Gt => out.push(0x62),
+            Instruction::F64Ge => out.push(0x63),
+            Instruction::F64Lt => out.push(0x64),
+            Instruction::F64Le => out.push(0x65),
+
 
             Instruction::I32Store { align, offset } => {
                 out.push(0x36);
@@ -415,6 +479,38 @@ impl Emittable for Instruction {
                 encode_u32(align.trailing_zeros(), out);
                 encode_u32(*offset as u32, out);
             },
+            Instruction::I64Store { align, offset } => {
+                out.push(0x37);
+                encode_u32(align.trailing_zeros(), out);
+                encode_u32(*offset as u32, out);
+            }
+            Instruction::I64Load { align, offset } => {
+                out.push(0x29);
+                encode_u32(align.trailing_zeros(), out);
+                encode_u32(*offset as u32, out);
+            },
+            Instruction::F32Store { align, offset } => {
+                out.push(0x38);
+                encode_u32(align.trailing_zeros(), out);
+                encode_u32(*offset as u32, out);
+            }
+            Instruction::F32Load { align, offset } => {
+                out.push(0x2A);
+                encode_u32(align.trailing_zeros(), out);
+                encode_u32(*offset as u32, out);
+            },
+            Instruction::F64Store { align, offset } => {
+                out.push(0x39);
+                encode_u32(align.trailing_zeros(), out);
+                encode_u32(*offset as u32, out);
+            }
+            Instruction::F64Load { align, offset } => {
+                out.push(0x2B);
+                encode_u32(align.trailing_zeros(), out);
+                encode_u32(*offset as u32, out);
+            },
+
+
 
             Instruction::LocalGet { id } => {
                 out.push(0x20);

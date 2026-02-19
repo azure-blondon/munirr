@@ -1,5 +1,7 @@
+use std::vec;
+
 use crate::wasm_ir::{self, ExportDescriptor};
-use crate::errors::Position;
+use crate::errors::{self, Position};
 
 #[derive(Debug)]
 pub struct Module {
@@ -111,7 +113,7 @@ pub enum Value {
 
 
 impl Module {
-    pub fn lower(&mut self) -> wasm_ir::Module {
+    pub fn lower(&mut self) -> Result<wasm_ir::Module, Vec<errors::CompileError>> {
         let mut module = wasm_ir::Module {
             types: Vec::new(),
             globals: Vec::new(),
@@ -161,6 +163,13 @@ impl Module {
 
 
         for global in &self.globals {
+
+            let mut init = Vec::new();
+
+            for instr in &global.init {
+                init.extend(self.lower_instruction(instr, &function_indices, None, &mut Vec::new(), &mut 0)?);
+            }
+
             module.globals.push(wasm_ir::Global {
                 global_type: match global.global_type {
                     Type::I32 => wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::I32 },
@@ -172,7 +181,7 @@ impl Module {
                     true => wasm_ir::Mutability::Mutable,
                     false => wasm_ir::Mutability::Immutable,
                 },
-                init: global.init.iter().flat_map(|instr| self.lower_instruction(instr, &function_indices, None, &mut Vec::new(), &mut 0)).collect(),
+                init,
             });
             if global.export {
                 module.exports.push(wasm_ir::Export {
@@ -205,7 +214,9 @@ impl Module {
                         });
                         continue;
                     },
-                    None => panic!("Function not found: {}", function),
+                    None => return Err(vec![
+                        errors::CompileError::IRLoweringError(format!("Function not found: {}", function), Position { line: 0, column: 0, index: 0 })
+                    ]),
                 }
             };
 
@@ -222,12 +233,18 @@ impl Module {
             };
             let type_index = self.find_or_create_type_index(&mut module.types, &func_type);
 
+            
+            let mut body = Vec::new();
+            for instr in &function.body {
+                body.extend(self.lower_instruction(instr, &function_indices, Some(idx), &mut Vec::new(), &mut 0)?);
+            }
+            
             module.functions.push(wasm_ir::Function {
                 type_index,
                 locals: function.locals.iter().map(|(_, ty)| match self.lower_type(ty) {
                     wasm_ir::Type::ValueType { value_type } => value_type,
                 }).collect(),
-                body: function.body.iter().flat_map(|instr| self.lower_instruction(instr, &function_indices, Some(idx), &mut Vec::new(), &mut 0)).collect(),
+                body: body,
             });
             
             if function.export {
@@ -250,7 +267,7 @@ impl Module {
             descriptor: ExportDescriptor::MemoryIndex(0),
         });
         
-        module
+        Ok(module)
     }
 
 
@@ -261,111 +278,155 @@ impl Module {
         current_function_index: Option<usize>,
         label_stack: &mut Vec<(String, u32)>,
         next_label_id: &mut u32,
-    ) -> Vec<wasm_ir::Instruction> {
+    ) -> Result<Vec<wasm_ir::Instruction>, Vec<errors::CompileError>> {
         match &instruction.instruction {
-            Instruction::Const { value } => vec![self.lower_value(&value)],
+            Instruction::Const { value } => Ok(vec![self.lower_value(&value)]),
             Instruction::UnaryOp { op, operand } => {
-                let mut instrs = self.lower_instruction(operand, function_indices, current_function_index, label_stack, next_label_id);
-                match op {
-                    UnOp::Neg => {
-                        instrs.push(wasm_ir::Instruction::I32Const { value: -1 });
-                        instrs.push(wasm_ir::Instruction::I32Mul);
-                    }
-                    UnOp::Not => {
-                        instrs.push(wasm_ir::Instruction::I32Const { value: 0 });
-                        instrs.push(wasm_ir::Instruction::I32Eq);
-                    }
+                let mut instrs = self.lower_instruction(operand, function_indices, current_function_index, label_stack, next_label_id)?;
+                let operand_type = operand.result_type.as_ref();
+                if operand_type.is_none() {
+                    return Err(vec![
+                        errors::CompileError::IRLoweringError("Unary operation operand must have a type".to_string(), instruction.position)
+                    ]);
                 }
-                instrs
+                let operand_type = operand_type.unwrap();
+                let unop_instrs = self.find_unop(op, operand_type).ok_or(vec![
+                    errors::CompileError::IRLoweringError(format!("Unsupported unary operation: {:?} with type {:?}", op, instruction.result_type), instruction.position)
+                ])?;
+                instrs.extend(unop_instrs);
+                Ok(instrs)
                 
             }
             Instruction::BinaryOp { op, left, right } => {
-                let mut instrs = self.lower_instruction(left, function_indices, current_function_index, label_stack, next_label_id);
-                instrs.extend(self.lower_instruction(right, function_indices, current_function_index, label_stack, next_label_id));
-                instrs.push(match op {
-                    BinOp::Add => wasm_ir::Instruction::I32Add,
-                    BinOp::Sub => wasm_ir::Instruction::I32Sub,
-                    BinOp::Mul => wasm_ir::Instruction::I32Mul,
-                    BinOp::Div => wasm_ir::Instruction::I32DivS,
-                    BinOp::Gt => wasm_ir::Instruction::I32Gt,
-                    BinOp::Ge => wasm_ir::Instruction::I32Ge,
-                    BinOp::Lt => wasm_ir::Instruction::I32Lt,
-                    BinOp::Le => wasm_ir::Instruction::I32Le, 
-                    BinOp::Eq => wasm_ir::Instruction::I32Eq, // TODO handle other types
-                });
-                instrs
+                let mut instrs = self.lower_instruction(left, function_indices, current_function_index, label_stack, next_label_id)?;
+                instrs.extend(self.lower_instruction(right, function_indices, current_function_index, label_stack, next_label_id)?);
+
+                let result_type = instruction.result_type.as_ref();
+                if result_type.is_none() {
+                    return Err(vec![
+                        errors::CompileError::IRLoweringError("Binary operation must have a result type".to_string(), instruction.position)
+                    ]);
+                }
+                let left_type = left.result_type.as_ref();
+                if left_type.is_none() {
+                    return Err(vec![
+                        errors::CompileError::IRLoweringError("Binary operation left operand must have a type".to_string(), instruction.position)
+                    ]);
+                }
+                let left_type = left_type.unwrap();
+
+                if let Some(binop_instr) = self.find_binop(op, left_type) {
+                    instrs.push(binop_instr);
+                } else {
+                    return Err(vec![
+                        errors::CompileError::IRLoweringError(format!("Unsupported binary operation: {:?} with type {:?}", op, instruction.result_type), instruction.position)
+                    ]);
+                }
+                Ok(instrs)
             },
             Instruction::Load { address } => {
-                let mut instrs = self.lower_instruction(address, function_indices, current_function_index, label_stack, next_label_id);
-                instrs.push(wasm_ir::Instruction::I32Load { align: 1, offset: 0 });
-                instrs
+                let mut instrs = self.lower_instruction(address, function_indices, current_function_index, label_stack, next_label_id)?;
+                if let Some(load_instr) = self.find_memory_instruction(&instruction.instruction, instruction.result_type.as_ref().expect("Load operation must have a result type")) {
+                    instrs.push(load_instr);
+                } else {
+                    return Err(vec![
+                        errors::CompileError::IRLoweringError(format!("Unsupported load operation with type {:?}", instruction.result_type), instruction.position)
+                    ]);
+                }
+                Ok(instrs)
             },
             Instruction::Store { address, value } => {
-                let mut instrs = self.lower_instruction(address, function_indices, current_function_index, label_stack, next_label_id);
-                instrs.extend(self.lower_instruction(value, function_indices, current_function_index, label_stack, next_label_id));
-                instrs.push(wasm_ir::Instruction::I32Store { align: 1, offset: 0 });
-                instrs
+                let mut instrs = self.lower_instruction(address, function_indices, current_function_index, label_stack, next_label_id)?;
+                instrs.extend(self.lower_instruction(value, function_indices, current_function_index, label_stack, next_label_id)?);
+                
+                let value_type = value.result_type.as_ref();
+                if value_type.is_none() {
+                    return Err(vec![
+                        errors::CompileError::IRLoweringError("Store operation value must have a type".to_string(), instruction.position)
+                    ]);
+                }
+                let value_type = value_type.unwrap();
+                
+                if let Some(store_instr) = self.find_memory_instruction(&instruction.instruction, value_type) {
+                    instrs.push(store_instr);
+                } else {
+                    return Err(vec![
+                        errors::CompileError::IRLoweringError(format!("Unsupported store operation with type {:?}", instruction.result_type), instruction.position)
+                    ]);
+                }
+                Ok(instrs)
             },
 
             Instruction::Alloc { size } => {
                 let mut instrs = Vec::new();
                 
                 // Evaluate size once and store it
-                let size_instrs = self.lower_instruction(size, function_indices, current_function_index, label_stack, next_label_id);
+                let size_instrs = self.lower_instruction(size, function_indices, current_function_index, label_stack, next_label_id)?;
                 
                 // ptr = load _heap_ptr
-                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_heap_ptr") });
-                instrs.push(wasm_ir::Instruction::GlobalSet { id: self.get_global_index("_temp_ptr") });
+                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_heap_ptr")? });
+                instrs.push(wasm_ir::Instruction::GlobalSet { id: self.get_global_index("_temp_ptr")? });
                 
                 // Store length at ptr: *ptr = size
-                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_temp_ptr") });
+                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_temp_ptr")? });
                 instrs.extend(size_instrs.clone());  // Use the cached size
                 instrs.push(wasm_ir::Instruction::I32Store { align: 1, offset: 0 });
                 
                 // Increment _heap_ptr by (4 + size)
-                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_heap_ptr") });
+                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_heap_ptr")? });
                 instrs.push(wasm_ir::Instruction::I32Const { value: 4 });
                 instrs.extend(size_instrs.clone());  // Use the cached size again
                 instrs.push(wasm_ir::Instruction::I32Add);
                 instrs.push(wasm_ir::Instruction::I32Add);
-                instrs.push(wasm_ir::Instruction::GlobalSet { id: self.get_global_index("_heap_ptr") });
+                instrs.push(wasm_ir::Instruction::GlobalSet { id: self.get_global_index("_heap_ptr")? });
                 
                 // Return ptr + 4 (data start, skipping length)
-                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_temp_ptr") });
+                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_temp_ptr")? });
                 instrs.push(wasm_ir::Instruction::I32Const { value: 4 });
                 instrs.push(wasm_ir::Instruction::I32Add);
                 
-                instrs
+                Ok(instrs)
             }
 
             Instruction::VarGet { name } => {
                 if let Some(func_idx) = current_function_index {
                     let local_func_idx = func_idx - self.host_imports.len();
                     if self.get_locals_names(local_func_idx).iter().any(|local_name| local_name == name) {
-                        return vec![wasm_ir::Instruction::LocalGet { id: self.get_local_index(local_func_idx, name) }];
+                        return Ok(vec![wasm_ir::Instruction::LocalGet { id: self.get_local_index(local_func_idx, name) }]);
                     }
                 }
 
-                vec![wasm_ir::Instruction::GlobalGet { id: self.get_global_index(name) }]
+                Ok(vec![wasm_ir::Instruction::GlobalGet { id: self.get_global_index(name)? }])
             },
             Instruction::VarSet { name, value } => {
                 if let Some(func_idx) = current_function_index {
                     let local_func_idx = func_idx - self.host_imports.len();
                     if self.local_functions[local_func_idx].params.iter().any(|(param_name, _)| param_name == name) || self.local_functions[local_func_idx].locals.iter().any(|(local_name, _)| local_name == name) {
-                        let mut instrs = self.lower_instruction(value, function_indices, current_function_index, label_stack, next_label_id);
+                        let mut instrs = self.lower_instruction(value, function_indices, current_function_index, label_stack, next_label_id)?;
                         instrs.push(wasm_ir::Instruction::LocalSet { id: self.get_local_index(local_func_idx, name) });
-                        return instrs;
+                        return Ok(instrs);
                     }
                 }
-                vec![wasm_ir::Instruction::GlobalSet { id: self.get_global_index(name) }]
+                Ok(vec![wasm_ir::Instruction::GlobalSet { id: self.get_global_index(name)? }])
             },
             Instruction::If { condition, then_body, else_body } => {
-                let mut instrs = self.lower_instruction(condition, function_indices, current_function_index, label_stack, next_label_id);
-                
+
+                let mut instrs = self.lower_instruction(condition, function_indices, current_function_index, label_stack, next_label_id)?;
+
+                let mut then_body_instrs = Vec::new();
+                for instr in then_body {
+                    then_body_instrs.extend(self.lower_instruction(instr, function_indices, current_function_index, label_stack, next_label_id)?);
+                }
+                let mut else_body_instrs = Vec::new();
+                for instr in else_body {
+                    else_body_instrs.extend(self.lower_instruction(instr, function_indices, current_function_index, label_stack, next_label_id)?);
+                }
+
+
                 instrs.push(wasm_ir::Instruction::If {
                     block_type: wasm_ir::BlockType::ValueTypes { value_types: Vec::new() },
-                    then_body: then_body.iter().flat_map(|instr| self.lower_instruction(instr, function_indices, current_function_index, label_stack, next_label_id)).collect(),
-                    else_body: else_body.iter().flat_map(|instr| self.lower_instruction(instr, function_indices, current_function_index, label_stack, next_label_id)).collect(),
+                    then_body: then_body_instrs,
+                    else_body: else_body_instrs,
                 });
                 
                 let both_branches_return = self.does_it_return(then_body) && self.does_it_return(else_body);
@@ -374,64 +435,71 @@ impl Module {
                     instrs.push(wasm_ir::Instruction::Unreachable);
                 }
 
-                instrs
+                Ok(instrs)
             },
             Instruction::Block { label, body } => {
                 let mut instrs = Vec::new();
                 let label_id = *next_label_id;
                 *next_label_id += 1;
                 label_stack.push((label.clone(), label_id));
-                let lowered = body.iter().flat_map(|instr| self.lower_instruction(instr, function_indices, current_function_index, label_stack, next_label_id)).collect();
+
+                let mut body_instrs = Vec::new();
+                for instr in body {
+                    body_instrs.extend(self.lower_instruction(instr, function_indices, current_function_index, label_stack, next_label_id)?);
+                }
                 label_stack.pop();
                 instrs.push(wasm_ir::Instruction::Block {
                     block_type: wasm_ir::BlockType::ValueTypes { value_types: Vec::new() },
-                    body: lowered,
+                    body: body_instrs,
                 });
                 if self.does_it_return(body) {
                     instrs.push(wasm_ir::Instruction::Unreachable);
                 }
-                instrs
+                Ok(instrs)
             },
             Instruction::Loop { label, body } => {
                 let mut instrs = Vec::new();
                 let label_id = *next_label_id;
                 *next_label_id += 1;
                 label_stack.push((label.clone(), label_id));
-                let lowered = body.iter().flat_map(|instr| self.lower_instruction(instr, function_indices, current_function_index, label_stack, next_label_id)).collect();
+                let mut body_instrs = Vec::new();
+                for instr in body {
+                    body_instrs.extend(self.lower_instruction(instr, function_indices, current_function_index, label_stack, next_label_id)?);
+                }
                 label_stack.pop();
                 instrs.push(wasm_ir::Instruction::Loop {
                     block_type: wasm_ir::BlockType::ValueTypes { value_types: Vec::new() },
-                    body: lowered,
+                    body: body_instrs,
                 });
                 if self.does_it_return(body) {
                     instrs.push(wasm_ir::Instruction::Unreachable);
                 }
-                instrs
+                Ok(instrs)
             },
             Instruction::Break { value } => {
                 let mut instrs = Vec::new();
                 instrs.push(wasm_ir::Instruction::Br { label_index: *value });
-                instrs
+                Ok(instrs)
             },
             Instruction::Return { value } => {
                 let mut instrs = Vec::new();
                 if let Some(value) = value {
-                    instrs.extend(self.lower_instruction(value, function_indices, current_function_index, label_stack, next_label_id));
+                    instrs.extend(self.lower_instruction(value, function_indices, current_function_index, label_stack, next_label_id)?);
                 }
                 instrs.push(wasm_ir::Instruction::Return);
-                instrs
+                Ok(instrs)
             },
             Instruction::Call { function_name, args } => {
                 let function_index = self.get_function_index(function_name, function_indices).unwrap();
                 
                 let mut instrs = Vec::new();
                 for arg in args {
-                    instrs.extend(self.lower_instruction(arg, function_indices, current_function_index, label_stack, next_label_id));
+                    instrs.extend(self.lower_instruction(arg, function_indices, current_function_index, label_stack, next_label_id)?);
                 }
                 instrs.push(wasm_ir::Instruction::Call { function_index });
-                instrs
+                Ok(instrs)
             }
-            Instruction::Drop => vec![wasm_ir::Instruction::Drop],
+            Instruction::Drop => Ok(vec![wasm_ir::Instruction::Drop]),
         }
     }
 
@@ -482,8 +550,8 @@ impl Module {
         names
     }
 
-    fn get_global_index(&self, name: &str) -> u32 {
-        self.globals.iter().position(|g| g.name == name).expect("Global not found") as u32
+    fn get_global_index(&self, name: &str) -> Result<u32, Vec<errors::CompileError>> {
+        self.globals.iter().position(|g| g.name == name).map(|idx| idx as u32).ok_or(vec![errors::CompileError::IRLoweringError(format!("Global not found: {}", name), Position { line: 0, column: 0, index: 0 })])
     }
 
     fn does_it_return(&self, body: &[TypedInstruction]) -> bool {
@@ -555,6 +623,80 @@ impl Module {
             for instr in &function.body {
                 println!("      {:?} (result type: {:?})", instr.instruction, instr.result_type);
             }
+        }
+    }
+
+    fn find_binop(&self, op: &BinOp, ty: &Type) -> Option<wasm_ir::Instruction> {
+        match (op, ty) {
+            (BinOp::Add, Type::I32) => Some(wasm_ir::Instruction::I32Add),
+            (BinOp::Sub, Type::I32) => Some(wasm_ir::Instruction::I32Sub),
+            (BinOp::Mul, Type::I32) => Some(wasm_ir::Instruction::I32Mul),
+            (BinOp::Div, Type::I32) => Some(wasm_ir::Instruction::I32DivS),
+            (BinOp::Gt, Type::I32) => Some(wasm_ir::Instruction::I32Gt),
+            (BinOp::Ge, Type::I32) => Some(wasm_ir::Instruction::I32Ge),
+            (BinOp::Lt, Type::I32) => Some(wasm_ir::Instruction::I32Lt),
+            (BinOp::Le, Type::I32) => Some(wasm_ir::Instruction::I32Le), 
+            (BinOp::Eq, Type::I32) => Some(wasm_ir::Instruction::I32Eq),
+            
+            (BinOp::Add, Type::I64) => Some(wasm_ir::Instruction::I64Add),
+            (BinOp::Sub, Type::I64) => Some(wasm_ir::Instruction::I64Sub),
+            (BinOp::Mul, Type::I64) => Some(wasm_ir::Instruction::I64Mul),
+            (BinOp::Div, Type::I64) => Some(wasm_ir::Instruction::I64DivS),
+            (BinOp::Gt, Type::I64) => Some(wasm_ir::Instruction::I64Gt),
+            (BinOp::Ge, Type::I64) => Some(wasm_ir::Instruction::I64Ge),
+            (BinOp::Lt, Type::I64) => Some(wasm_ir::Instruction::I64Lt),
+            (BinOp::Le, Type::I64) => Some(wasm_ir::Instruction::I64Le), 
+            (BinOp::Eq, Type::I64) => Some(wasm_ir::Instruction::I64Eq),
+
+            (BinOp::Add, Type::F32) => Some(wasm_ir::Instruction::F32Add),
+            (BinOp::Sub, Type::F32) => Some(wasm_ir::Instruction::F32Sub),
+            (BinOp::Mul, Type::F32) => Some(wasm_ir::Instruction::F32Mul),
+            (BinOp::Div, Type::F32) => Some(wasm_ir::Instruction::F32Div),
+            (BinOp::Gt, Type::F32) => Some(wasm_ir::Instruction::F32Gt),
+            (BinOp::Ge, Type::F32) => Some(wasm_ir::Instruction::F32Ge),
+            (BinOp::Lt, Type::F32) => Some(wasm_ir::Instruction::F32Lt),
+            (BinOp::Le, Type::F32) => Some(wasm_ir::Instruction::F32Le), 
+            (BinOp::Eq, Type::F32) => Some(wasm_ir::Instruction::F32Eq),
+
+            (BinOp::Add, Type::F64) => Some(wasm_ir::Instruction::F64Add),
+            (BinOp::Sub, Type::F64) => Some(wasm_ir::Instruction::F64Sub),
+            (BinOp::Mul, Type::F64) => Some(wasm_ir::Instruction::F64Mul),
+            (BinOp::Div, Type::F64) => Some(wasm_ir::Instruction::F64Div),
+            (BinOp::Gt, Type::F64) => Some(wasm_ir::Instruction::F64Gt),
+            (BinOp::Ge, Type::F64) => Some(wasm_ir::Instruction::F64Ge),
+            (BinOp::Lt, Type::F64) => Some(wasm_ir::Instruction::F64Lt),
+            (BinOp::Le, Type::F64) => Some(wasm_ir::Instruction::F64Le), 
+            (BinOp::Eq, Type::F64) => Some(wasm_ir::Instruction::F64Eq),
+        }
+    }
+
+    fn find_unop(&self, op: &UnOp, ty: &Type) -> Option<Vec<wasm_ir::Instruction>> {
+        match (op, ty) {
+            (UnOp::Neg, Type::I32) => Some(vec![wasm_ir::Instruction::I32Const { value: -1 }, wasm_ir::Instruction::I32Mul]),
+            (UnOp::Neg, Type::I64) => Some(vec![wasm_ir::Instruction::I64Const { value: -1 }, wasm_ir::Instruction::I64Mul]),
+            (UnOp::Neg, Type::F32) => Some(vec![wasm_ir::Instruction::F32Const { value: -1.0 }, wasm_ir::Instruction::F32Mul]),
+            (UnOp::Neg, Type::F64) => Some(vec![wasm_ir::Instruction::F64Const { value: -1.0 }, wasm_ir::Instruction::F64Mul]),
+            (UnOp::Not, Type::I32) => Some(vec![wasm_ir::Instruction::I32Const { value: 0 }, wasm_ir::Instruction::I32Eq]),
+            (UnOp::Not, Type::I64) => Some(vec![wasm_ir::Instruction::I64Const { value: 0 }, wasm_ir::Instruction::I64Eq]),
+            _ => None,
+        }
+    }
+
+    fn find_memory_instruction(&self, op: &Instruction, ty: &Type) -> Option<wasm_ir::Instruction> {
+        match (op, ty) {
+            (Instruction::Load { .. }, Type::I32) => Some(wasm_ir::Instruction::I32Load { align: 1, offset: 0 }),
+            (Instruction::Store { .. }, Type::I32) => Some(wasm_ir::Instruction::I32Store { align: 1, offset: 0 }),
+            
+            (Instruction::Load { .. }, Type::I64) => Some(wasm_ir::Instruction::I64Load { align: 1, offset: 0 }),
+            (Instruction::Store { .. }, Type::I64) => Some(wasm_ir::Instruction::I64Store { align: 1, offset: 0 }),
+            
+            (Instruction::Load { .. }, Type::F32) => Some(wasm_ir::Instruction::F32Load { align: 1, offset: 0 }),
+            (Instruction::Store { .. }, Type::F32) => Some(wasm_ir::Instruction::F32Store { align: 1, offset: 0 }),
+            
+            (Instruction::Load { .. }, Type::F64) => Some(wasm_ir::Instruction::F64Load { align: 1, offset: 0 }),
+            (Instruction::Store { .. }, Type::F64) => Some(wasm_ir::Instruction::F64Store { align: 1, offset: 0 }),
+            
+            _ => None,
         }
     }
 }

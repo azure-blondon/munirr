@@ -217,7 +217,10 @@ impl Program {
     }
 
     fn lower_instruction(&self, instruction: &TypedNode, mut block_stack: Vec<BlockType>) -> Result<muni_ir::TypedInstruction, errors::CompileError> {
-        let mut instr_pos = errors::Position { line: 0, column: 0, index: 0 };
+        let mut instr_pos = match instruction {
+            TypedNode::Statement { statement } => statement.position(),
+            TypedNode::Expression { expression, result_type: _ } => expression.position(),
+        };
         let instr = match instruction {
             TypedNode::Statement { statement } => match statement {
                 Statement::If { condition, then_body, else_body, position } => {
@@ -242,9 +245,7 @@ impl Program {
                         Expression::UnaryOp { op: _, operand: _, position: _ } => true,
                         Expression::Literal { value: _, position: _ } => true,
                         Expression::Identifier { name: _, position: _ } => true,
-                        Expression::Call { function: function_name, args: _, position: _ } if function_name == "store" => false,
                         Expression::Call { function: function_name, args: _, position: _ }  => {
-                            // Check if the function returns a value
                             self.module.function_returns_value(function_name)
                         }
                     };
@@ -437,53 +438,58 @@ impl Program {
     pub fn display_instruction(&self, instruction: &TypedNode, indent: usize) {
         let indent_str = " ".repeat(indent);
         match instruction {
-            TypedNode::Statement { statement } => match statement {
-                Statement::If { condition, then_body, else_body, position: _ } => {
-                    println!("{}If:", indent_str);
-                    self.display_instruction(condition, indent + 2);
-                    println!("{}Then:", indent_str);
-                    for instr in then_body {
-                        self.display_instruction(instr, indent + 4);
+            TypedNode::Statement { statement } => {
+                println!("{}Statement:", indent_str);
+
+                match statement {
+                    Statement::If { condition, then_body, else_body, position: _ } => {
+                        println!("{}If:", indent_str);
+                        self.display_instruction(condition, indent + 2);
+                        println!("{}Then:", indent_str);
+                        for instr in then_body {
+                            self.display_instruction(instr, indent + 4);
+                        }
+                        println!("{}Else:", indent_str);
+                        for instr in else_body {
+                            self.display_instruction(instr, indent + 4);
+                        }
+                    },
+                    Statement::Return { value, position: _ } => {
+                        println!("{}Return:", indent_str);
+                        if let Some(value) = value {
+                            self.display_instruction(value, indent + 2);
+                        }
+                    },
+                    Statement::Expression { expression, position: _ } => {
+                        println!("{}Expression:", indent_str);
+                        self.display_instruction(&TypedNode::Expression { expression: expression.clone(), result_type: None }, indent + 2);
+                    },
+                    Statement::VariableDeclaration { name, ty, init, position: _ } => {
+                        println!("{}Variable declaration: {}: {:?}", indent_str, name, ty);
+                        if let Some(init) = init {
+                            println!("{}Initializer:", indent_str);
+                            self.display_instruction(init, indent + 2);
+                        }
+                    },
+                    Statement::Block { body, position: _ } => {
+                        println!("{}Block:", indent_str);
+                        for instr in body {
+                            self.display_instruction(instr, indent + 2);
+                        }
+                    },
+                    Statement::Loop { body, position: _ } => {
+                        println!("{}Loop:", indent_str);
+                        for instr in body {
+                            self.display_instruction(instr, indent + 2);
+                        }
+                    },
+                    Statement::Break { position: _ } => {
+                        println!("{}Break", indent_str);
+                    },
+                    Statement::Continue { position: _ } => {
+                        println!("{}Continue", indent_str);
                     }
-                    println!("{}Else:", indent_str);
-                    for instr in else_body {
-                        self.display_instruction(instr, indent + 4);
-                    }
-                },
-                Statement::Return { value, position: _ } => {
-                    println!("{}Return:", indent_str);
-                    if let Some(value) = value {
-                        self.display_instruction(value, indent + 2);
-                    }
-                },
-                Statement::Expression { expression, position: _ } => {
-                    println!("{}Expression: {:?}", indent_str, expression);
-                },
-                Statement::VariableDeclaration { name, ty, init, position: _ } => {
-                    println!("{}Variable declaration: {}: {:?}", indent_str, name, ty);
-                    if let Some(init) = init {
-                        println!("{}Initializer:", indent_str);
-                        self.display_instruction(init, indent + 2);
-                    }
-                },
-                Statement::Block { body, position: _ } => {
-                    println!("{}Block:", indent_str);
-                    for instr in body {
-                        self.display_instruction(instr, indent + 2);
-                    }
-                },
-                Statement::Loop { body, position: _ } => {
-                    println!("{}Loop:", indent_str);
-                    for instr in body {
-                        self.display_instruction(instr, indent + 2);
-                    }
-                },
-                Statement::Break { position: _ } => {
-                    println!("{}Break", indent_str);
-                },
-                Statement::Continue { position: _ } => {
-                    println!("{}Continue", indent_str);
-                }
+                }  
             },
             TypedNode::Expression { expression, result_type } => {
                 println!("{}Expression: {:?} (type: {:?})", indent_str, expression, result_type);
@@ -570,8 +576,8 @@ impl Module {
         
         // Special built-in functions
         match function_name {
-            "store" | "alloc" | "load" => false, // These are special, handled separately
-            _ => true, // Default: assume it returns a value
+            "store" => false, 
+            _ => true,
         }
     }
 
