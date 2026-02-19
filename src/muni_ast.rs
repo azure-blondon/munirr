@@ -111,6 +111,7 @@ pub enum UnOp {
 pub enum Literal {
     Integer(i64),
     Float(f64),
+    Character(i32),
 }
 
 
@@ -375,6 +376,7 @@ impl Program {
             Expression::Literal { value, position: _ } => Ok(muni_ir::Instruction::Const { value: match value {
                 Literal::Integer(i) => muni_ir::Value::I32(*i as i32), // TODO: handle different integer types
                 Literal::Float(f) => muni_ir::Value::F32(*f as f32), // TODO: handle different float types
+                Literal::Character(c) => muni_ir::Value::I32(*c),
             } } ),
             Expression::Identifier { name, position: _ } => {
 

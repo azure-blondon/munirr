@@ -223,6 +223,7 @@ impl TypeChecker {
                 let literal_type = match value {
                     Literal::Integer(_) => Type::I64,
                     Literal::Float(_) => Type::F64,
+                    Literal::Character(_) => Type::I32,
                 };
                 
                 if let Some(wants) = wants {
@@ -323,7 +324,7 @@ impl TypeChecker {
                         self.update_expression_types(arg_expr, Some(*param_type), const_expr)?;
                     }
                     
-                    println!("Function '{}', with type {:?}", function_name, func_sig.return_type);
+                    //println!("Function '{}', with type {:?}", function_name, func_sig.return_type);
 
                     func_sig.return_type
                 

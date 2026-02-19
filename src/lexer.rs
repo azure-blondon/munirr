@@ -12,6 +12,7 @@ pub enum TokenKind {
     Identifier(String),
     Integer(i64),
     Float(f64),
+    Char(i32),
 
     Keyword(Keyword),
     Operator(Operator),
@@ -191,6 +192,10 @@ impl Lexer {
                 }
             },
 
+            '\'' => {
+                self.read_char_literal()
+            }
+
             c if c.is_ascii_digit() => {
                 self.read_number()
             },
@@ -242,6 +247,43 @@ impl Lexer {
         };
 
         Token { kind, position: self.position.clone() }
+    }
+
+    fn read_char_literal(&mut self) -> Token {
+        let start_pos = self.position.clone();
+        self.position.advance('\'');
+        if self.is_at_end() {
+            return Token { kind: TokenKind::Error, position: start_pos };
+        }
+        let char_value = self.peek_char().unwrap();
+
+        // handle escape sequences
+        let char_value = if char_value == '\\' {
+            self.position.advance('\\');
+            if self.is_at_end() {
+                return Token { kind: TokenKind::Error, position: start_pos };
+            }
+            match self.peek_char().unwrap() {
+                'n' => '\n',
+                't' => '\t',
+                'r' => '\r',
+                '\\' => '\\',
+                '\'' => '\'',
+                '\"' => '\"',
+                other => {
+                    eprintln!("Unknown escape sequence: \\{}", other);
+                    return Token { kind: TokenKind::Error, position: start_pos };
+                }
+            }
+        } else {
+            char_value
+        };
+        self.position.advance(char_value);
+        if self.is_at_end() || self.peek_char().unwrap() != '\'' {
+            return Token { kind: TokenKind::Error, position: start_pos };
+        }
+        self.position.advance('\'');
+        Token { kind: TokenKind::Char(char_value as i32), position: start_pos }
     }
 
 }

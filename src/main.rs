@@ -24,13 +24,13 @@ pub fn compile_muni_to_wasm(muni_code: String) -> Result<Vec<u8>, Vec<errors::Co
     
     let mut type_checker = type_checker::TypeChecker::new();
     type_checker.check_ast(&mut ast)?;
-    ast.display();
+    //ast.display();
     
     let mut muni_ir = ast.lower()?;
     
     let mut wasm_ir = muni_ir.lower()?;  
     
-    println!("WASM IR: {:#?}", wasm_ir);
+    //println!("WASM IR: {:#?}", wasm_ir);
     
     let mut out = Vec::new();
     

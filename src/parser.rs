@@ -547,6 +547,17 @@ impl Parser {
                     result_type: None,
                 })
             },
+            TokenKind::Char(n) => {
+                let val = *n;
+                self.advance();
+                Ok(muni_ast::TypedNode::Expression {
+                    expression: muni_ast::Expression::Literal {
+                        value: muni_ast::Literal::Character(val),
+                        position,
+                    },
+                    result_type: None,
+                })
+            }
             TokenKind::Identifier(name) => {
                 let ident = name.clone();
                 self.advance();
