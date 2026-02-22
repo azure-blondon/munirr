@@ -25,15 +25,3 @@ minimal stdlib:
 nice to have:
 - [ ] boolean literals
 - [ ] char literals
-
-
-
-
-
-## to-do
-- [x] start the readme
-- [x] compile a first program (yay!)
-- [x] clean up lexer
-- [ ] clean up parser
-- [ ] write tests
-- [ ] add loops
