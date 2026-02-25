@@ -2,6 +2,7 @@
 
 use crate::errors::{Position};
 
+#[derive(Debug, Clone)]
 pub struct Token {
     pub kind: TokenKind,
     pub position: Position,
@@ -64,9 +65,11 @@ pub enum Symbol {
     RBrace,
     Comma,
     Semicolon,
-
+    LBracket,
+    RBracket,
 }
 
+#[derive(Debug, Clone)]
 pub struct Lexer {
     input: String,
     position: Position,
@@ -80,6 +83,8 @@ const SINGLE_CHAR_TOKENS: &[(&str, TokenKind)] = &[
     (")", TokenKind::Symbol(Symbol::RParen)),
     ("{", TokenKind::Symbol(Symbol::LBrace)),
     ("}", TokenKind::Symbol(Symbol::RBrace)),
+    ("[", TokenKind::Symbol(Symbol::LBracket)),
+    ("]", TokenKind::Symbol(Symbol::RBracket)),
     (",", TokenKind::Symbol(Symbol::Comma)),
     (";", TokenKind::Symbol(Symbol::Semicolon)),
     (".", TokenKind::Operator(Operator::Dot)),

@@ -1,5 +1,6 @@
 // test suite for the compiler written in simple Rust, without using any testing framework
 
+use crate::Options;
 use crate::compile_muni_to_wasm;
 use crate::errors;
 
@@ -49,7 +50,15 @@ fn run_test(test_dir_name: &str) -> Result<bool, Vec<errors::CompileError>> {
     let expected_wasm = std::fs::read(format!("tests/{test_dir_name}/expected.wasm"))
         .expect("Failed to read expected.wasm file");
     
-    let compiled_wasm = compile_muni_to_wasm(muni_code)?;
+    let options = Options {
+        show_tokens: false,
+        show_ast: false,
+        show_checked_ast: false,
+        show_muni_ir: false,
+        show_wasm_ir: false,
+    };
+
+    let compiled_wasm = compile_muni_to_wasm(muni_code, options)?;
     
     if compiled_wasm == expected_wasm {
         println!("Test {test_dir_name} passed!");

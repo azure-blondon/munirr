@@ -1,3 +1,5 @@
+use core::panic;
+
 use crate::{muni_ir, errors};
 use rand;
 
@@ -50,12 +52,13 @@ pub enum TypeDef {
     Alias { name: String, ty: Type, position: errors::Position },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Type {
     I32,
     I64,
     F32,
     F64,
+    Buf(Box<Type>),
 }
 
 
@@ -85,6 +88,7 @@ pub enum Expression {
     Literal { value: Literal, position: errors::Position },
     Identifier { name: String, position: errors::Position },
     Call { function: String, args: Vec<TypedNode>, position: errors::Position },
+    BufferAccess { buffer: Box<TypedNode>, index: Box<TypedNode>, position: errors::Position },
 }
 
 #[derive(Debug, Clone)]
@@ -157,6 +161,8 @@ impl Program {
             };
             ir_functions.push(ir_function);
         }
+
+
         let mut ir_globals = Vec::new();
         for global in &module.globals {
             ir_globals.push(muni_ir::Global {
@@ -171,6 +177,7 @@ impl Program {
                             Type::I64 => muni_ir::Value::I64(0),
                             Type::F32 => muni_ir::Value::F32(0.0),
                             Type::F64 => muni_ir::Value::F64(0.0),
+                            Type::Buf(_) => muni_ir::Value::I32(0),
                         } },
                         result_type: Some(self.lower_type(&global.ty)),
                         position: global.position,
@@ -206,6 +213,7 @@ impl Program {
             Type::I64 => muni_ir::Type::I64,
             Type::F32 => muni_ir::Type::F32,
             Type::F64 => muni_ir::Type::F64,
+            Type::Buf(inner) => muni_ir::Type::Buf(Box::new(self.lower_type(inner))),
         }
     }
 
@@ -239,9 +247,9 @@ impl Program {
                 },
                 Statement::Expression { expression, position } => {
                     instr_pos = *position;
-                    let expr_instr = self.lower_expression(expression)?;
+                    let expr_instr = self.lower_expression(expression, &instruction.result_type())?;
                     
-                    let needs_drop = match expression {
+                    let needs_drop = match expression { 
                         Expression::BinaryOp { op: _, left: _, right: _, position: _ } => true,
                         Expression::UnaryOp { op: _, operand: _, position: _ } => true,
                         Expression::Literal { value: _, position: _ } => true,
@@ -249,6 +257,7 @@ impl Program {
                         Expression::Call { function: function_name, args: _, position: _ }  => {
                             self.module.function_returns_value(function_name)
                         }
+                        Expression::BufferAccess { buffer: _, index: _, position: _ } => true,
                     };
                     
                     if needs_drop {
@@ -280,11 +289,26 @@ impl Program {
                             Type::I64 => muni_ir::Value::I64(0),
                             Type::F32 => muni_ir::Value::F32(0.0),
                             Type::F64 => muni_ir::Value::F64(0.0),
+                            Type::Buf(_) => muni_ir::Value::I32(0),
                         } },
                         result_type: Some(self.lower_type(ty)),
                         position: *position,
                     });
-                    muni_ir::Instruction::VarSet { name: name.clone(), value: init.unwrap_or(default) }
+                    muni_ir::Instruction::Block {
+                        label: format!("var_drop_{}", rand::random::<u64>()),
+                        body: vec![
+                            muni_ir::TypedInstruction {
+                                instruction: muni_ir::Instruction::VarSet { name: name.clone(), value: init.unwrap_or(default) },
+                                result_type: None,
+                                position: *position,
+                            },
+                            muni_ir::TypedInstruction {
+                                instruction: muni_ir::Instruction::Drop,
+                                result_type: None,
+                                position: *position,
+                            },
+                        ]
+                    }
                 },
                 Statement::Block { body, position } => {
                     instr_pos = *position;
@@ -324,9 +348,12 @@ impl Program {
                     instr_pos = *position;
                     muni_ir::Instruction::Break { value: block_stack.iter().rev().enumerate().find(|(_, bt)| matches!(bt, BlockType::Loop | BlockType::Block)).map(|(idx, _)| idx).unwrap_or(0) as u32 }
                 }
+                
+                
+                
             },
-            TypedNode::Expression { expression, result_type: _ } => {
-                self.lower_expression(expression)?
+            TypedNode::Expression { expression, result_type } => {
+                self.lower_expression(expression, result_type)?
 
             },
         };
@@ -341,7 +368,7 @@ impl Program {
     
     }
 
-    fn lower_expression(&self, expression: &Expression) -> Result<muni_ir::Instruction, errors::CompileError> {
+    fn lower_expression(&self, expression: &Expression, expr_type: &Option<Type>) -> Result<muni_ir::Instruction, errors::CompileError> {
         match expression {
             Expression::UnaryOp { op, operand, position: _ } => {
                 let lowered_operand = Box::new(self.lower_instruction(operand, Vec::new())?);
@@ -367,6 +394,41 @@ impl Program {
                     BinOp::Assign => {
                         let name = match left.as_ref() {
                             TypedNode::Expression { expression: Expression::Identifier { name, position: _ }, result_type: _ } => name.clone(),
+                            TypedNode::Expression { expression: Expression::BufferAccess { buffer, index, position }, result_type: _ } => {
+
+                                // a[b] = c  => store(a + b*sizeof(c), c)
+                                let index = Box::new(self.lower_instruction(index, Vec::new())?);
+                                let buffer_address = Box::new(self.lower_instruction(buffer, Vec::new())?);
+                                let address = Box::new(muni_ir::TypedInstruction {
+                                    instruction: muni_ir::Instruction::BinaryOp {
+                                        op: muni_ir::BinOp::Add,
+                                        left: buffer_address,
+                                        right: Box::new(muni_ir::TypedInstruction {
+                                            instruction: muni_ir::Instruction::BinaryOp {
+                                                op: muni_ir::BinOp::Mul,
+                                                left: index,
+                                                right: Box::new(muni_ir::TypedInstruction {
+                                                    instruction: muni_ir::Instruction::Const { value: match right.result_type() {
+                                                        Some(Type::I32) => muni_ir::Value::I32(4),
+                                                        Some(Type::I64) => muni_ir::Value::I32(8),
+                                                        Some(Type::F32) => muni_ir::Value::I32(4),
+                                                        Some(Type::F64) => muni_ir::Value::I32(8),
+                                                        Some(Type::Buf(_)) => muni_ir::Value::I32(4),
+                                                        None => panic!("Type of right-hand side of assignment should have been determined during type checking"),
+                                                    } },
+                                                    result_type: Some(muni_ir::Type::I32),
+                                                    position: *position,
+                                                }),
+                                            },
+                                            position: *position,
+                                            result_type: Some(muni_ir::Type::I32),
+                                        }),
+                                    },
+                                    position: *position,
+                                    result_type: Some(muni_ir::Type::I32),
+                                });
+                                return Ok(muni_ir::Instruction::Store { address, value: lowered_right });
+                            }
                             _ => return Err(errors::CompileError::IRLoweringError("Left-hand side of assignment must be an identifier".to_string(), *position)),
                         };
                         muni_ir::Instruction::VarSet { name: name, value: lowered_right }
@@ -384,42 +446,59 @@ impl Program {
             },
             Expression::Call { function, args, position } => {
                 match function.as_str() {
-                    "alloc" => {
+                    "alloc_i32" => {
                         if args.len() != 1 {
                             return Err(errors::CompileError::IRLoweringError("alloc function must have exactly one argument".to_string(), *position));
                         }
-                        let size = Box::new(self.lower_instruction(&args[0], Vec::new())?);
-                        return Ok(muni_ir::Instruction::Alloc { size });
-                    },
-                    "load" => {
-                        if args.len() != 1 {
-                            return Err(errors::CompileError::IRLoweringError("load function must have exactly one argument".to_string(), *position));
-                        }
-                        let address = Box::new(self.lower_instruction(&args[0], Vec::new())?);
-                        return Ok(muni_ir::Instruction::Load { address });
-                    },
-                    "store" => {
-                        if args.len() != 2 {
-                            return Err(errors::CompileError::IRLoweringError("store function must have exactly two arguments".to_string(), *position));
-                        }
-                        let address = Box::new(self.lower_instruction(&args[0], Vec::new())?);
-                        let value = Box::new(self.lower_instruction(&args[1], Vec::new())?);
-                        return Ok(muni_ir::Instruction::Store { address, value });
+                        let amount = Box::new(self.lower_instruction(&args[0], Vec::new())?);
+                        return Ok(muni_ir::Instruction::Alloc { block_size: 4, amount });
                     },
                     _ => {}
                 }
                 let lowered_args = args.iter().map(|arg| self.lower_instruction(arg, Vec::new())).collect::<Result<Vec<_>, _>>()?;
                 Ok(muni_ir::Instruction::Call { function_name: function.clone(), args: lowered_args })
             },
+            Expression::BufferAccess { buffer, index, position } => {
+                let index = Box::new(self.lower_instruction(index, Vec::new())?);
+                let buffer_address = Box::new(self.lower_instruction(buffer, Vec::new())?);
+                let address = Box::new(muni_ir::TypedInstruction {
+                    instruction: muni_ir::Instruction::BinaryOp {
+                        op: muni_ir::BinOp::Add,
+                        left: buffer_address,
+                        right: Box::new(muni_ir::TypedInstruction {
+                            instruction: muni_ir::Instruction::BinaryOp {
+                                op: muni_ir::BinOp::Mul,
+                                left: index,
+                                right: Box::new(muni_ir::TypedInstruction {
+                                    instruction: muni_ir::Instruction::Const { value: match expr_type {
+                                        Some(Type::I32) => muni_ir::Value::I32(4),
+                                        Some(Type::I64) => muni_ir::Value::I32(8),
+                                        Some(Type::F32) => muni_ir::Value::I32(4),
+                                        Some(Type::F64) => muni_ir::Value::I32(8),
+                                        Some(Type::Buf(_)) => muni_ir::Value::I32(4),
+                                        None => panic!("Type of buffer access should have been determined during type checking"),
+                                    } },
+                                    result_type: Some(muni_ir::Type::I32),
+                                    position: *position,
+                                }),
+                            },
+                            position: *position,
+                            result_type: Some(muni_ir::Type::I32),
+                        }),
+                    },
+                    position: *position,
+                    result_type: Some(muni_ir::Type::I32),
+                });
+                Ok(muni_ir::Instruction::Load { address })
+            }
         }
     }
 
-    #[allow(unused)]
     pub fn display(&self) {
         println!("Module:");
         for type_def in &self.module.types {
             match type_def {
-                TypeDef::Alias { name, ty, position } => {
+                TypeDef::Alias { name, ty, position: _ } => {
                     println!("  Type alias: {} = {:?}", name, ty);
                 },
             }
@@ -618,6 +697,8 @@ impl Expression {
             Expression::Literal { position, .. } => *position,
             Expression::Identifier { position, .. } => *position,
             Expression::Call { position, .. } => *position,
+            Expression::BufferAccess { position, .. } => *position,
         }
     }
+
 }

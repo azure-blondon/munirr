@@ -49,6 +49,15 @@ impl TypeChecker {
         current_scope.variables.insert(name, ty);
         Ok(())
     }
+
+    fn lookup_variable(&self, name: &str) -> Option<Type> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(ty) = scope.variables.get(name) {
+                return Some(ty.clone());
+            }
+        }
+        None
+    }
     
     fn lookup_function(&self, name: &str) -> Option<&FunctionSignature> {
         self.functions.iter().find(|(func_name, _)| func_name == name).map(|(_, sig)| sig)
@@ -58,15 +67,21 @@ impl TypeChecker {
         let mut errors = Vec::new();
 
         self.collect_function_signatures(ast);
+        self.functions.push(("alloc_i32".to_string(), FunctionSignature {
+            params: vec![("size".to_string(), Type::I32)],
+            return_type: Some(Type::Buf(Box::new(Type::I32))),
+        }));
 
         
         // global scope
         self.push_scope();
 
+        
+
         // check global initializations
         for global in &mut ast.module.globals {
             self.check_global_initialization(global).unwrap_or_else(|e| errors.push(e));
-            self.define_variable(global.name.clone(), global.ty, global.position).unwrap_or_else(|e| errors.push(e));
+            self.define_variable(global.name.clone(), global.ty.clone(), global.position).unwrap_or_else(|e| errors.push(e));
         }
 
         // check function bodies
@@ -74,7 +89,7 @@ impl TypeChecker {
             self.current_function = Some(function.name.clone());
             self.push_scope();
             for (param_name, param_type) in &function.params {
-                self.define_variable(param_name.clone(), *param_type, function.position).unwrap_or_else(|e| errors.push(e));
+                self.define_variable(param_name.clone(), param_type.clone(), function.position).unwrap_or_else(|e| errors.push(e));
             }
             for instr in &mut function.body {
                 self.check_node(instr).unwrap_or_else(|e| errors.push(e));
@@ -95,22 +110,30 @@ impl TypeChecker {
 
         for import in &ast.module.host_imports {
             self.functions.push((import.function.clone(), FunctionSignature {
-                params: import.params.iter().enumerate().map(|(i, ty)| (format!("arg{}", i), *ty)).collect(),
-                return_type: import.return_type,
+                params: import.params.iter().enumerate().map(|(i, ty)| (format!("arg{}", i), ty.clone())).collect(),
+                return_type: import.return_type.clone(),
             }));
         }
 
         for function in &ast.module.functions {
             self.functions.push((function.name.clone(), FunctionSignature {
                 params: function.params.clone(),
-                return_type: function.return_type,
+                return_type: function.return_type.clone(),
             }));
         }
     }
     
     
     fn check_global_initialization(&mut self, global: &mut Global) -> Result<(), CompileError> {
-        self.update_expression_types(&mut global.init, Some(global.ty), true)?;
+        match global.ty {
+            Type::Buf(_) => return Err(CompileError::TypeCheckingError(
+                "Global variables cannot be of buffer type".to_string(),
+                global.position
+            )),
+            _ => {}
+        }
+
+        self.update_expression_types(&mut global.init, Some(global.ty.clone()), true)?;
         if !self.is_expression_constant(&global.init) {
             return Err(CompileError::TypeCheckingError(
                 format!("Global '{}' must be a constant expression", global.name),
@@ -174,16 +197,16 @@ impl TypeChecker {
                         }
                         let current_func_sig = current_func_sig.unwrap();
 
-                        self.update_expression_types(expr, current_func_sig.return_type, false)?;
+                        self.update_expression_types(expr, current_func_sig.return_type.clone(), false)?;
                     }
                 }
                 Statement::Break { position: _ } => {}
                 Statement::Continue { position: _ } => {}
                 Statement::VariableDeclaration { name, ty, init, position } => {
+                    self.define_variable(name.clone(), ty.clone(), *position)?;
                     if let Some(init_expr) = init {
-                        self.update_expression_types(init_expr, Some(*ty), false)?;
+                        self.update_expression_types(init_expr, Some(ty.clone()), false)?;
                     }
-                    self.define_variable(name.clone(), *ty, *position)?;
                 }
                 Statement::Expression { expression, position: _ } => {
                     let mut checked_expr = TypedNode::Expression { expression: expression.clone(), result_type: None };
@@ -238,7 +261,7 @@ impl TypeChecker {
             }
             Expression::BinaryOp { op, left, right, position } => {
                 let left_type = self.update_expression_types(left, wants.clone(), const_expr)?;
-                let left_type = if let Some(wants) = wants {
+                let left_type = if let Some(wants) = wants.clone() {
                     self.cast_type(left_type.ok_or_else(|| CompileError::TypeCheckingError(
                         "Could not infer type of left operand".to_string(),
                         *position
@@ -251,7 +274,7 @@ impl TypeChecker {
                 };
                 let right_type = self.update_expression_types(right, Some(left_type.clone()), const_expr)?;
                 
-                let right_type = if let Some(wants) = wants {
+                let mut right_type = if let Some(wants) = wants {
                     self.cast_type(right_type.ok_or_else(|| CompileError::TypeCheckingError(
                         "Could not infer type of right operand".to_string(),
                         *position
@@ -263,11 +286,18 @@ impl TypeChecker {
                     ))?
                 };
 
-                if left_type != right_type {
-                    return Err(CompileError::TypeCheckingError(
-                        format!("Type mismatch in binary op: {:?} vs {:?}", left_type, right_type),
-                        *position
-                    ));
+                if right_type != left_type {
+                    if let Ok(_) = self.cast_type(right_type.clone(), left_type.clone(), *position) {
+                        // if cast successful, pass through
+                    } else if let Ok(_) = self.cast_type(left_type.clone(), right_type.clone(), *position) {
+                        // if cast successful, pass through
+                        std::mem::swap(&mut right_type, &mut left_type.clone());
+                    } else {
+                        return Err(CompileError::TypeCheckingError(
+                            format!("Type mismatch in binary operation: left is {:?} but right is {:?}", left_type, right_type),
+                            *position
+                        ));
+                    }
                 }
                 
                 
@@ -285,13 +315,7 @@ impl TypeChecker {
                         *position
                     ));
                 } else {
-                    let mut found_type = None;
-                    for scope in self.scopes.iter().rev() {
-                        if let Some(ty) = scope.variables.get(name) {
-                            found_type = Some(ty.clone());
-                            break;
-                        }
-                    }
+                    let found_type = self.lookup_variable(name);
                     if let Some(ty) = found_type {
                         Some(ty)
                     } else {
@@ -321,12 +345,16 @@ impl TypeChecker {
 
                     // Check argument types
                     for (arg_expr, (_, param_type)) in arguments.iter_mut().zip(func_sig.params.iter()) {
-                        self.update_expression_types(arg_expr, Some(*param_type), const_expr)?;
+                        self.update_expression_types(arg_expr, Some(param_type.clone()), const_expr)?;
                     }
                     
-                    //println!("Function '{}', with type {:?}", function_name, func_sig.return_type);
 
-                    func_sig.return_type
+                    if let Some(wants) = wants {
+                        Some(self.cast_type(func_sig.return_type.clone().unwrap_or(Type::I32), wants, *position)?)
+                    } else {
+                        func_sig.return_type.clone()
+                    }
+
                 
                 
                 } else {
@@ -334,6 +362,29 @@ impl TypeChecker {
                         format!("Undefined function '{}'", function_name),
                         *position
                     ));
+                }
+                
+            }
+            Expression::BufferAccess { buffer, index, position } => {
+                let index_type = self.update_expression_types(index, Some(Type::I32), const_expr)?;
+                if index_type != Some(Type::I32) {
+                    return Err(CompileError::TypeCheckingError(
+                        format!("Buffer index must be of type i32, found {:?}", index_type),
+                        *position
+                    ));
+                }
+                // Return the buffer type (assuming buffer is of type Buf(T) where T is the element type)
+                let buffer_type = self.update_expression_types(buffer, None, const_expr)?;
+                match buffer_type {
+                    Some(Type::Buf(elem_type)) => Some(*elem_type),
+                    Some(other) => return Err(CompileError::TypeCheckingError(
+                        format!("Expected buffer type but found {:?}", other),
+                        *position
+                    )),
+                    None => return Err(CompileError::TypeCheckingError(
+                        "Could not infer type of buffer".to_string(),
+                        *position
+                    )),
                 }
                 
             }
@@ -352,6 +403,7 @@ impl TypeChecker {
             Type::I32 => match from {
                 Type::I32 => Ok(Type::I32),
                 Type::I64 => Ok(Type::I32),
+                Type::Buf(_) => Ok(Type::I32), // allow casting buffer to i32 for pointer arithmetic
                 _ => Err(CompileError::TypeCheckingError(format!("Cannot cast {:?} to {:?}", from, to), position)),
             }
             Type::I64 => match from {
@@ -367,6 +419,10 @@ impl TypeChecker {
             Type::F64 => match from {
                 Type::F32 => Ok(Type::F64),
                 Type::F64 => Ok(Type::F64),
+                _ => Err(CompileError::TypeCheckingError(format!("Cannot cast {:?} to {:?}", from, to), position)),
+            }
+            Type::Buf(ref t) => match from {
+                Type::Buf(ref from_t) if from_t == t => Ok(Type::Buf(t.clone())),
                 _ => Err(CompileError::TypeCheckingError(format!("Cannot cast {:?} to {:?}", from, to), position)),
             }
         }

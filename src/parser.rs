@@ -92,6 +92,7 @@ impl Parser {
     }
 
     
+
     fn parse_import(&mut self) -> Result<muni_ast::HostImport, errors::CompileError> {
         // import a.b(i32) -> i32;
         // import a.b(i32); (void return type)
@@ -182,6 +183,13 @@ impl Parser {
                     "i64" => Some(muni_ast::Type::I64),
                     "f32" => Some(muni_ast::Type::F32),
                     "f64" => Some(muni_ast::Type::F64),
+                    "buf" => {
+                        self.advance();
+                        self.expect(&TokenKind::Operator(Operator::Lt))?;
+                        let inner_type = self.parse_type()?.ok_or_else(|| errors::CompileError::ParserError(format!("Buffer type cannot be void"), self.nth_token(0).position.clone()))?;
+                        self.expect(&TokenKind::Operator(Operator::Gt))?;
+                        return Ok(Some(muni_ast::Type::Buf(Box::new(inner_type))))
+                    },
                     "void" => None,
                     _ => return Err(errors::CompileError::ParserError(format!("Unknown type '{}'", type_name), self.nth_token(0).position.clone())),
                 };
@@ -315,10 +323,10 @@ impl Parser {
             _ => {
                 // check for variable declaration : i32 x = 5;
                 let saved_position: usize = self.position;
-                if let TokenKind::Identifier(_type_name) = &self.nth_token(0).kind {
+                if self.is_a_type(&self.nth_token(0).kind) {
                     if let Ok(Some(ty)) = self.parse_type() && let TokenKind::Identifier(var_name) = &self.nth_token(0).kind {
                         let var_name = var_name.clone();
-                        self.advance();
+                        self.advance(); 
                         let initializer = if self.nth_token(0).kind == TokenKind::Operator(Operator::Assign) {
                             self.advance();
                             Some(Box::new(self.parse_expression()?))
@@ -336,6 +344,9 @@ impl Parser {
                     }
                 }
 
+                
+                
+                // otherwise, it's an expression statement
                 let expr: muni_ast::TypedNode = self.parse_expression()?;
                 if semi {
                     self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
@@ -515,6 +526,21 @@ impl Parser {
                         result_type: None,
                     };
                 },
+                TokenKind::Symbol(Symbol::LBracket) => {
+                    self.advance();
+                    let index = self.parse_expression()?;
+                    self.expect(&TokenKind::Symbol(Symbol::RBracket))?;
+                    
+                    
+                    expr = muni_ast::TypedNode::Expression {
+                        expression: muni_ast::Expression::BufferAccess {
+                            buffer:  Box::new(expr),
+                            index: Box::new(index),
+                            position: position.clone(),
+                        },
+                        result_type: None,
+                    };
+                },
                 _ => break,
             }
         }
@@ -590,6 +616,13 @@ impl Parser {
 
     fn is_right_associative(&self, token_kind: &TokenKind) -> bool {
         matches!(token_kind, TokenKind::Operator(Operator::Assign))
+    }
+
+    fn is_a_type(&self, token_kind: &TokenKind) -> bool {
+        match token_kind {
+            TokenKind::Identifier(type_name) => matches!(type_name.as_str(), "i32" | "i64" | "f32" | "f64" | "void" | "buf"),
+            _ => false,
+        }
     }
 
     #[allow(unused)]

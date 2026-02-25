@@ -649,6 +649,10 @@ impl Module {
         for (i, t) in self.types.iter().enumerate() {
             s.push_str(&format!("    {}: {:?}\n", i, t));
         }
+        s.push_str("  Host Imports:\n");
+        for (i, import) in self.host_imports.iter().enumerate() {
+            s.push_str(&format!("    {}: {:?}\n", i, import));
+        }
         s.push_str("  Functions:\n");
         for (i, f) in self.functions.iter().enumerate() {
             s.push_str(&format!("    {}: {:?}\n", i, f));
