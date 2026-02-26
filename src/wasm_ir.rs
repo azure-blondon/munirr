@@ -105,6 +105,7 @@ pub enum Instruction {
     I32Sub,
     I32Mul,
     I32DivS,
+    I32RemS,
     I32Eq,
     I32Gt,
     I32Ge,
@@ -115,6 +116,7 @@ pub enum Instruction {
     I64Sub,
     I64Mul,
     I64DivS,
+    I64RemS,
     I64Eq,
     I64Gt,
     I64Ge,
@@ -432,16 +434,18 @@ impl Emittable for Instruction {
             Instruction::I32Sub => out.push(0x6B),
             Instruction::I32Mul => out.push(0x6C),
             Instruction::I32DivS => out.push(0x6D),
+            Instruction::I32RemS => out.push(0x6F),
             Instruction::I32Eq => out.push(0x46),
+            Instruction::I32Lt => out.push(0x48),
             Instruction::I32Gt => out.push(0x4A),
+            Instruction::I32Le => out.push(0x4C),
             Instruction::I32Ge => out.push(0x4E),
-            Instruction::I32Lt => out.push(0x4C),
-            Instruction::I32Le => out.push(0x4D),
             
             Instruction::I64Add => out.push(0x7C),
             Instruction::I64Sub => out.push(0x7D),
             Instruction::I64Mul => out.push(0x7E),
             Instruction::I64DivS => out.push(0x7F),
+            Instruction::I64RemS => out.push(0x80),
             Instruction::I64Eq => out.push(0x51),
             Instruction::I64Gt => out.push(0x5A),
             Instruction::I64Ge => out.push(0x5E),
@@ -531,28 +535,31 @@ impl Emittable for Instruction {
             Instruction::Nop => out.push(0x01),
             Instruction::Unreachable => out.push(0x00),
             Instruction::Drop => out.push(0x1A),
-            Instruction::Block { block_type, body } => {
-                out.push(0x02);
-                match block_type {
-                    BlockType::TypeIndex { index } => {
-                        encode_u32(*index, out);
-                    }
-                    BlockType::ValueTypes { value_types } => {
-                        if value_types.is_empty() {
-                            out.push(0x40);
-                        } else {
-                            encode_u32(value_types.len() as u32, out);
-                            for vt in value_types {
-                                vt.emit(out);
+                Instruction::Block { block_type, body } => {
+                    out.push(0x02);
+                    match block_type {
+                        BlockType::TypeIndex { index } => {
+                            encode_u32(*index, out);
+                        }
+                        BlockType::ValueTypes { value_types } => {
+                            if value_types.is_empty() {
+                                out.push(0x40);
+                            } else if value_types.len() == 1 {
+                                value_types[0].emit(out);
+                            } else {
+                                encode_u32(value_types.len() as u32, out);
+                                for vt in value_types {
+                                    vt.emit(out);
+                                }
+                                
                             }
                         }
                     }
+                    for instr in body {
+                        instr.emit(out);
+                    }
+                    out.push(0x0B); // End opcode
                 }
-                for instr in body {
-                    instr.emit(out);
-                }
-                out.push(0x0B); // End opcode
-            }
             Instruction::Loop { block_type, body } => {
                 out.push(0x03);
                 match block_type {
@@ -621,6 +628,16 @@ impl Emittable for Instruction {
     }
 }
 
+
+impl Emittable for Type {
+    fn emit(&mut self, out: &mut Vec<u8>) {
+        match self {
+            Type::ValueType { value_type } => {
+                value_type.emit(out);
+            }
+        }
+    }
+}
 
 impl Emittable for Global {
     fn emit(&mut self, out: &mut Vec<u8>) {

@@ -97,6 +97,7 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    Mod,
     Gt,
     Lt,
     Ge,
@@ -116,6 +117,7 @@ pub enum Literal {
     Integer(i64),
     Float(f64),
     Character(i32),
+    String(String),
 }
 
 
@@ -274,8 +276,10 @@ impl Program {
                                     result_type: None,
                                     position: *position,
                                 }
-                            ]
+                            ],
+                            result_type: None,
                         }
+                    
                     } else {
                         expr_instr
                     }
@@ -307,14 +311,15 @@ impl Program {
                                 result_type: None,
                                 position: *position,
                             },
-                        ]
+                        ],
+                        result_type: None,
                     }
                 },
                 Statement::Block { body, position } => {
                     instr_pos = *position;
                     block_stack.push(BlockType::Block);
                     let body = self.lower_instructions(body, block_stack.clone())?;
-                    muni_ir::Instruction::Block { label: format!("block_{}", rand::random::<u64>()), body }
+                    muni_ir::Instruction::Block { label: format!("block_{}", rand::random::<u64>()), body, result_type: None }
                 },
                 Statement::Loop { body, position } => {
                     instr_pos = *position;
@@ -337,7 +342,9 @@ impl Program {
                             result_type: None,
                             position: *position,
                         },
-                    ] }
+                    ],
+                    result_type: None 
+                }
 
                 },
                 Statement::Break { position } => {
@@ -386,6 +393,7 @@ impl Program {
                     BinOp::Sub => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Sub, left: lowered_left, right: lowered_right },
                     BinOp::Mul => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Mul, left: lowered_left, right: lowered_right },
                     BinOp::Div => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Div, left: lowered_left, right: lowered_right },
+                    BinOp::Mod => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Mod, left: lowered_left, right: lowered_right },
                     BinOp::Gt => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Gt, left: lowered_left, right: lowered_right },
                     BinOp::Lt => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Lt, left: lowered_left, right: lowered_right },
                     BinOp::Ge => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Ge, left: lowered_left, right: lowered_right },
@@ -435,11 +443,107 @@ impl Program {
                     }
                 })
             },
-            Expression::Literal { value, position: _ } => Ok(muni_ir::Instruction::Const { value: match value {
-                Literal::Integer(i) => muni_ir::Value::I32(*i as i32), // TODO: handle different integer types
-                Literal::Float(f) => muni_ir::Value::F32(*f as f32), // TODO: handle different float types
-                Literal::Character(c) => muni_ir::Value::I32(*c),
-            } } ),
+            Expression::Literal { value, position } => {
+                match value {
+                    Literal::Integer(i) => return Ok(muni_ir::Instruction::Const { value: muni_ir::Value::I32(*i as i32) }), // TODO: handle different integer types
+                    Literal::Float(f) => return Ok(muni_ir::Instruction::Const { value: muni_ir::Value::F32(*f as f32) }), // TODO: handle different float types
+                    Literal::Character(c) => return Ok(muni_ir::Instruction::Const { value: muni_ir::Value::I32(*c) }),
+                    Literal::String(s) => {
+                        /*
+                        
+                        "hi" -> 
+                        global set _tmp_ptr = alloc_i32(2);
+                        store(_tmp_ptr + 0, 'h');
+                        store(_tmp_ptr + 4, 'i');
+                        local get _tmp_ptr
+                         */
+                        let mut body = Vec::new();
+
+                        body.push(
+                            muni_ir::TypedInstruction {
+                                instruction: muni_ir::Instruction::VarSet { name: "_temp_ptr".to_string(), value: Box::new(muni_ir::TypedInstruction {
+                                    instruction: muni_ir::Instruction::Alloc { block_size: 4, amount: Box::new(muni_ir::TypedInstruction {
+                                        instruction: muni_ir::Instruction::Const { value: muni_ir::Value::I32(s.len() as i32) },
+                                        result_type: Some(muni_ir::Type::I32),
+                                        position: *position,
+                                    }) },
+                                    result_type: Some(muni_ir::Type::I32),
+                                    position: *position,
+                                })
+                                },
+                                result_type: None,
+                                position: *position,
+                            }
+                        );
+
+                        body.push(
+                            muni_ir::TypedInstruction {
+                                instruction: muni_ir::Instruction::Drop,
+                                result_type: None,
+                                position: *position,
+                            }
+                        );
+
+                        for (i, byte) in s.bytes().enumerate() {
+                            body.push(
+                                muni_ir::TypedInstruction {
+                                    instruction: muni_ir::Instruction::Store {
+                                        address: Box::new(muni_ir::TypedInstruction {
+                                            instruction: muni_ir::Instruction::BinaryOp {
+                                                op: muni_ir::BinOp::Add,
+                                                left: Box::new(muni_ir::TypedInstruction {
+                                                    instruction: muni_ir::Instruction::VarGet { name: "_temp_ptr".to_string() },
+                                                    result_type: Some(muni_ir::Type::I32),
+                                                    position: *position,
+                                                }),
+                                                right: Box::new(muni_ir::TypedInstruction {
+                                                    instruction: muni_ir::Instruction::Const { value: muni_ir::Value::I32((i * 4) as i32) },
+                                                    result_type: Some(muni_ir::Type::I32),
+                                                    position: *position,
+                                                }),
+                                            },
+                                            position: *position,
+                                            result_type: Some(muni_ir::Type::I32),
+                                        }),
+                                        value: Box::new(muni_ir::TypedInstruction {
+                                            instruction: muni_ir::Instruction::Const { value: muni_ir::Value::I32(byte as i32) },
+                                            result_type: Some(muni_ir::Type::I32),
+                                            position: *position,
+                                        }),
+                                    },
+                                    result_type: None,
+                                    position: *position,
+                                }
+                            );
+
+                            body.push(
+                                muni_ir::TypedInstruction {
+                                    instruction: muni_ir::Instruction::Drop,
+                                    result_type: None,
+                                    position: *position,
+                                }
+                            );
+                        }
+
+                        body.push(
+                            muni_ir::TypedInstruction {
+                                instruction: muni_ir::Instruction::VarGet { name: "_temp_ptr".to_string() },
+                                result_type: Some(muni_ir::Type::I32),
+                                position: *position,
+                            }
+                        );
+
+
+
+
+                        return Ok(muni_ir::Instruction::Block {
+                            label: format!("string_literal_{}", rand::random::<u64>()),
+                            body,
+                            result_type: Some(muni_ir::Type::I32),
+                        });
+                    }
+                }
+            }
             Expression::Identifier { name, position: _ } => {
 
                 Ok(muni_ir::Instruction::VarGet { name: name.clone() })

@@ -72,7 +72,7 @@ pub enum Instruction {
     VarSet { name: String, value: Box<TypedInstruction> },
     If { condition: Box<TypedInstruction>, then_body: Vec<TypedInstruction>, else_body: Vec<TypedInstruction> },
     Loop { label: String, body: Vec<TypedInstruction> },
-    Block { label: String, body: Vec<TypedInstruction> },
+    Block { label: String, body: Vec<TypedInstruction>, result_type: Option<Type> },
     Break { value: u32 },
     Return { value: Option<Box<TypedInstruction>> },
     Call { function_name: String, args: Vec<TypedInstruction> },
@@ -88,6 +88,7 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    Mod,
     Gt,
     Ge,
     Lt,
@@ -552,7 +553,7 @@ impl Module {
 
                 Ok(instrs)
             },
-            Instruction::Block { label, body } => {
+            Instruction::Block { label, body, result_type } => {
                 let mut instrs = Vec::new();
                 let label_id = *next_label_id;
                 *next_label_id += 1;
@@ -564,7 +565,12 @@ impl Module {
                 }
                 label_stack.pop();
                 instrs.push(wasm_ir::Instruction::Block {
-                    block_type: wasm_ir::BlockType::ValueTypes { value_types: Vec::new() },
+                    block_type: wasm_ir::BlockType::ValueTypes { value_types: match result_type {
+                        None => Vec::new(),
+                        Some(ty) => vec![match self.lower_type(ty) {
+                            wasm_ir::Type::ValueType { value_type } => value_type,
+                        }],
+                    } },
                     body: body_instrs,
                 });
                 if self.does_it_return(body) {
@@ -748,6 +754,7 @@ impl Module {
             (BinOp::Sub, Type::I32) => Some(wasm_ir::Instruction::I32Sub),
             (BinOp::Mul, Type::I32) => Some(wasm_ir::Instruction::I32Mul),
             (BinOp::Div, Type::I32) => Some(wasm_ir::Instruction::I32DivS),
+            (BinOp::Mod, Type::I32) => Some(wasm_ir::Instruction::I32RemS),
             (BinOp::Gt, Type::I32) => Some(wasm_ir::Instruction::I32Gt),
             (BinOp::Ge, Type::I32) => Some(wasm_ir::Instruction::I32Ge),
             (BinOp::Lt, Type::I32) => Some(wasm_ir::Instruction::I32Lt),
@@ -758,6 +765,7 @@ impl Module {
             (BinOp::Sub, Type::I64) => Some(wasm_ir::Instruction::I64Sub),
             (BinOp::Mul, Type::I64) => Some(wasm_ir::Instruction::I64Mul),
             (BinOp::Div, Type::I64) => Some(wasm_ir::Instruction::I64DivS),
+            (BinOp::Mod, Type::I64) => Some(wasm_ir::Instruction::I64RemS),
             (BinOp::Gt, Type::I64) => Some(wasm_ir::Instruction::I64Gt),
             (BinOp::Ge, Type::I64) => Some(wasm_ir::Instruction::I64Ge),
             (BinOp::Lt, Type::I64) => Some(wasm_ir::Instruction::I64Lt),

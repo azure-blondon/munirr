@@ -14,6 +14,7 @@ pub enum TokenKind {
     Integer(i64),
     Float(f64),
     Char(i32),
+    String(String),
 
     Keyword(Keyword),
     Operator(Operator),
@@ -45,6 +46,7 @@ pub enum Operator {
     Minus,
     Mul,
     Div,
+    Mod,
     Assign,
     Eq,
     Ne,
@@ -79,6 +81,7 @@ const SINGLE_CHAR_TOKENS: &[(&str, TokenKind)] = &[
     ("+", TokenKind::Operator(Operator::Plus)),
     ("*", TokenKind::Operator(Operator::Mul)),
     ("/", TokenKind::Operator(Operator::Div)),
+    ("%", TokenKind::Operator(Operator::Mod)),
     ("(", TokenKind::Symbol(Symbol::LParen)),
     (")", TokenKind::Symbol(Symbol::RParen)),
     ("{", TokenKind::Symbol(Symbol::LBrace)),
@@ -200,6 +203,9 @@ impl Lexer {
             '\'' => {
                 self.read_char_literal()
             }
+            '"' => {
+                self.read_string_literal()
+            }
 
             c if c.is_ascii_digit() => {
                 self.read_number()
@@ -289,6 +295,43 @@ impl Lexer {
         }
         self.position.advance('\'');
         Token { kind: TokenKind::Char(char_value as i32), position: start_pos }
+    }
+
+    fn read_string_literal(&mut self) -> Token {
+        let start_pos = self.position.clone();
+        self.position.advance('"');
+        let mut string_value = String::new();
+
+        while !self.is_at_end() && self.peek_char().unwrap() != '"' {
+            let c = self.peek_char().unwrap();
+            if c == '\\' {
+                self.position.advance('\\');
+                if self.is_at_end() {
+                    return Token { kind: TokenKind::Error, position: start_pos };
+                }
+                match self.peek_char().unwrap() {
+                    'n' => string_value.push('\n'),
+                    't' => string_value.push('\t'),
+                    'r' => string_value.push('\r'),
+                    '\\' => string_value.push('\\'),
+                    '\'' => string_value.push('\''),
+                    '\"' => string_value.push('\"'),
+                    other => {
+                        eprintln!("Unknown escape sequence: \\{}", other);
+                        return Token { kind: TokenKind::Error, position: start_pos };
+                    }
+                }
+            } else {
+                string_value.push(c);
+            }
+            self.position.advance(c);
+        }
+
+        if self.is_at_end() || self.peek_char().unwrap() != '"' {
+            return Token { kind: TokenKind::Error, position: start_pos };
+        }
+        self.position.advance('"');
+        Token { kind: TokenKind::String(string_value), position: start_pos }
     }
 
 }

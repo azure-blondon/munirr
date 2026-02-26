@@ -1,6 +1,6 @@
 
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Position {
     pub line: usize,
     pub column: usize,
@@ -25,7 +25,7 @@ impl Position {
 
 
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum CompileError {
     LexerError(String, Position),
     ParserError(String, Position),

@@ -116,6 +116,11 @@ impl Parser {
                 return Err(errors::CompileError::ParserError(format!("Parameter type cannot be void"), self.nth_token(0).position.clone()));
             }
             params.push(param_type.unwrap());
+
+            if let TokenKind::Identifier(_param_name) = &self.nth_token(0).kind {
+                self.advance();
+            }
+
             if self.nth_token(0).kind == TokenKind::Symbol(Symbol::Comma) {
                 self.advance();
             }
@@ -433,6 +438,7 @@ impl Parser {
                 TokenKind::Operator(Operator::Minus) => muni_ast::BinOp::Sub,
                 TokenKind::Operator(Operator::Mul) => muni_ast::BinOp::Mul,
                 TokenKind::Operator(Operator::Div) => muni_ast::BinOp::Div,
+                TokenKind::Operator(Operator::Mod) => muni_ast::BinOp::Mod,
                 TokenKind::Operator(Operator::Gt) => muni_ast::BinOp::Gt,
                 TokenKind::Operator(Operator::Lt) => muni_ast::BinOp::Lt,
                 TokenKind::Operator(Operator::Ge) => muni_ast::BinOp::Ge,
@@ -584,6 +590,17 @@ impl Parser {
                     result_type: None,
                 })
             }
+            TokenKind::String(s) => {
+                let val = s.clone();
+                self.advance();
+                Ok(muni_ast::TypedNode::Expression {
+                    expression: muni_ast::Expression::Literal {
+                        value: muni_ast::Literal::String(val),
+                        position,
+                    },
+                    result_type: None,
+                })
+            }
             TokenKind::Identifier(name) => {
                 let ident = name.clone();
                 self.advance();
@@ -604,7 +621,7 @@ impl Parser {
 
     fn get_operator_precedence(&self, token_kind: &TokenKind) -> Option<i32> {
         match token_kind {
-            TokenKind::Operator(Operator::Mul) | TokenKind::Operator(Operator::Div) => Some(3),
+            TokenKind::Operator(Operator::Mul) | TokenKind::Operator(Operator::Div) | TokenKind::Operator(Operator::Mod) => Some(3),
             TokenKind::Operator(Operator::Plus) | TokenKind::Operator(Operator::Minus) => Some(4),
             TokenKind::Operator(Operator::Lt) | TokenKind::Operator(Operator::Gt)
             | TokenKind::Operator(Operator::Le) | TokenKind::Operator(Operator::Ge) => Some(9),

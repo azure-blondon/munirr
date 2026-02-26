@@ -19,6 +19,7 @@ pub struct Options {
     pub show_checked_ast: bool,
     pub show_muni_ir: bool,
     pub show_wasm_ir: bool,
+    pub force: bool,
 }
 
 
@@ -50,9 +51,10 @@ pub fn compile_muni_to_wasm(muni_code: String, options: Options) -> Result<Vec<u
         println!("AST:");
         ast.display();
     }
-    
-    let mut type_checker = type_checker::TypeChecker::new();
-    type_checker.check_ast(&mut ast)?;
+    if !options.force {
+        let mut type_checker = type_checker::TypeChecker::new();
+        type_checker.check_ast(&mut ast)?;
+    }
     
     if options.show_checked_ast {
         println!("AST:");
@@ -119,6 +121,7 @@ fn manage_args(args: Vec<String>) -> (Vec<String>, String, Options) {
         show_checked_ast: false,
         show_muni_ir: false,
         show_wasm_ir: false,
+        force: false,
     };
 
     let mut input_paths = Vec::new();
@@ -136,6 +139,8 @@ fn manage_args(args: Vec<String>) -> (Vec<String>, String, Options) {
             options.show_muni_ir = true;
         } else if arg == "-w" {
             options.show_wasm_ir = true;
+        } else if arg == "-f"  {
+            options.force = true;
         } else if arg == "-o" {
             if i + 1 >= args.len() {
                 eprintln!("Output file not specified after -o");

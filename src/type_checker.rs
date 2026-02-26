@@ -247,6 +247,7 @@ impl TypeChecker {
                     Literal::Integer(_) => Type::I64,
                     Literal::Float(_) => Type::F64,
                     Literal::Character(_) => Type::I32,
+                    Literal::String(_) => Type::I32,
                 };
                 
                 if let Some(wants) = wants {
@@ -302,7 +303,7 @@ impl TypeChecker {
                 
                 
                 let result = match op {
-                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div => left_type,
+                    BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => left_type,
                     BinOp::Gt | BinOp::Lt | BinOp::Ge | BinOp::Le | BinOp::Eq => Type::I32,
                     BinOp::Assign => left_type,
                 };
@@ -399,6 +400,9 @@ impl TypeChecker {
     
     
     fn cast_type(&self, from: Type, to: Type, position: Position) -> Result<Type, CompileError> {
+        if from == to {
+            return Ok(from);
+        }
         match to {
             Type::I32 => match from {
                 Type::I32 => Ok(Type::I32),
@@ -422,7 +426,14 @@ impl TypeChecker {
                 _ => Err(CompileError::TypeCheckingError(format!("Cannot cast {:?} to {:?}", from, to), position)),
             }
             Type::Buf(ref t) => match from {
-                Type::Buf(ref from_t) if from_t == t => Ok(Type::Buf(t.clone())),
+                Type::Buf(ref from_t) => {
+                    if self.cast_type(*from_t.clone(), *t.clone(), position).is_ok() {
+                        Ok(Type::Buf(t.clone()))
+                    } else {
+                        Err(CompileError::TypeCheckingError(format!("Cannot cast buffer of type {:?} to buffer of type {:?}", from_t, t), position))
+                    }
+                }
+                Type::I32 => Ok(Type::Buf(t.clone())), // allow casting i32 to buffer for pointer arithmetic
                 _ => Err(CompileError::TypeCheckingError(format!("Cannot cast {:?} to {:?}", from, to), position)),
             }
         }

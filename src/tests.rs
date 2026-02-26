@@ -56,6 +56,7 @@ fn run_test(test_dir_name: &str) -> Result<bool, Vec<errors::CompileError>> {
         show_checked_ast: false,
         show_muni_ir: false,
         show_wasm_ir: false,
+        force: false,
     };
 
     let compiled_wasm = compile_muni_to_wasm(muni_code, options)?;
