@@ -760,10 +760,7 @@ impl Module {
         }
         
         // Special built-in functions
-        match function_name {
-            "store" => false, 
-            _ => true,
-        }
+        true
     }
 
     fn get_local_function(&self, name: &str) -> Option<&Function> {

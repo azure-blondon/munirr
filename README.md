@@ -25,3 +25,17 @@ minimal stdlib:
 nice to have:
 - [x] char literals
 - [x] string literals
+
+
+## how to use
+
+it is possible to compile a muni program using `cargo`
+
+```bash
+cargo run <file1.mun> [file2.mun ...] -o <out.wasm>
+```
+
+example, using the wasi lib:
+```bash
+cargo run lib/wasi.mun main.mun -o out.wasm
+```
