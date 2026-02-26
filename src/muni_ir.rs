@@ -80,6 +80,7 @@ pub enum Instruction {
     Store { address: Box<TypedInstruction>, value: Box<TypedInstruction> },
     Alloc { block_size: u32, amount: Box<TypedInstruction> },
     Drop,
+    Unreachable,
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +210,11 @@ impl Module {
             params: vec![("size".to_string(), Type::I32)],
             return_type: Some(Type::Buf(Box::new(Type::I32))),
             body: vec![
+                TypedInstruction {
+                    instruction: Instruction::Unreachable,
+                    result_type: None,
+                    position: Position { line: 0, column: 0, index: 0 },
+                },
                 TypedInstruction {
                     instruction: Instruction::Return {
                         value: Some(Box::new(TypedInstruction {
@@ -621,6 +627,7 @@ impl Module {
                 Ok(instrs)
             }
             Instruction::Drop => Ok(vec![wasm_ir::Instruction::Drop]),
+            Instruction::Unreachable => Ok(vec![wasm_ir::Instruction::Unreachable]),
         }
     }
 
