@@ -15,13 +15,13 @@ needed features:
 - [x] an integer type
 - [x] loops
 - [x] imports (for WASI i/o imports)
-- [ ] a buffer type (C-style array)
+- [x] a buffer type (C-style array)
 - [ ] structs
 
 minimal stdlib:
 - [ ] vector type
-- [ ] println function
+- [x] println function
 
 nice to have:
-- [ ] boolean literals
-- [ ] char literals
+- [x] char literals
+- [x] string literals
