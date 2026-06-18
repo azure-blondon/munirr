@@ -46,13 +46,13 @@ pub struct HostImport {
 
 
 #[derive(Debug, Clone, PartialEq)]
-#[allow(dead_code)]
 pub enum Type {
     I32,
     I64,
     F32,
     F64,
-    Buf(Box<Type>),
+    Buffer { kind: Box<Type> },
+    Structure {  },
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +95,7 @@ pub enum BinOp {
     Lt,
     Le,
     Eq,
+    Ne,
 }
 
 #[derive(Debug, Clone)]
@@ -208,7 +209,7 @@ impl Module {
         self.local_functions.push(Function {
             name: "alloc_i32".to_string(),
             params: vec![("size".to_string(), Type::I32)],
-            return_type: Some(Type::Buf(Box::new(Type::I32))),
+            return_type: Some(Type::Buffer { kind: Box::new(Type::I32) } ),
             body: vec![
                 TypedInstruction {
                     instruction: Instruction::Unreachable,
@@ -223,7 +224,7 @@ impl Module {
                             position: Position { line: 0, column: 0, index: 0 },
                         }))
                     },
-                    result_type: Some(Type::Buf(Box::new(Type::I32))),
+                    result_type: Some(Type::Buffer { kind: Box::new(Type::I32) }),
                     position: Position { line: 0, column: 0, index: 0 },
                 }
             ],
@@ -259,7 +260,8 @@ impl Module {
                     Type::I64 => wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::I64 },
                     Type::F32 => wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::F32 },
                     Type::F64 => wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::F64 },
-                    Type::Buf(_) => panic!("Buffer type not supported for globals"),
+                    Type::Buffer { kind: _ } => panic!("Buffer type not supported for globals"),
+                    Type::Structure {  } => panic!("Structure type not supported for globals"),
                 },
                 mutable: match global.mutable {
                     true => wasm_ir::Mutability::Mutable,
@@ -400,12 +402,12 @@ impl Module {
                 let mut left_type = left_type.unwrap();
 
                 // if left type can be cast to i32, cast it (for example for buffer access)
-                if let Type::Buf(_) = left_type {
+                if let Type::Buffer { kind: _ } = left_type {
                     left_type = &Type::I32;
                 }
 
                 if let Some(binop_instr) = self.find_binop(op, left_type) {
-                    instrs.push(binop_instr);
+                    instrs.extend(binop_instr);
                 } else {
                     return Err(vec![
                         errors::CompileError::IRLoweringError(format!("Unsupported binary operation: {:?} with type {:?}", op, left_type), instruction.position)
@@ -442,7 +444,8 @@ impl Module {
                     Type::I64 => "_temp_i64",
                     Type::F32 => "_temp_f32",
                     Type::F64 => "_temp_f64",
-                    Type::Buf(_) => "_temp_i32",
+                    Type::Buffer { kind: _ } => "_temp_i32",
+                    Type::Structure {  } => "_temp_i32"
                 };
                 instrs.extend(value_instr.clone());
                 instrs.push(wasm_ir::Instruction::GlobalSet { id: self.get_global_index(global)? });
@@ -470,37 +473,43 @@ impl Module {
                 
                 // Evaluate size once and push it on the stack
                 instrs.extend( self.lower_instruction(amount, function_indices, current_function_index, label_stack, next_label_id)?);
-                // multiply by block_size
-                instrs.push(wasm_ir::Instruction::I32Const { value: *block_size as i32 });
-                instrs.push(wasm_ir::Instruction::I32Mul);
+                
+                instrs.extend([
+                    // multiply by block_size
+                    wasm_ir::Instruction::I32Const { value: *block_size as i32 },
+                    wasm_ir::Instruction::I32Mul,
 
-                instrs.push(wasm_ir::Instruction::GlobalSet { id: self.get_global_index("_temp_i32")? });
+                    wasm_ir::Instruction::GlobalSet { id: self.get_global_index("_temp_i32")? },
+
+                    // ptr = load _heap_ptr
+                    wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_heap_ptr")? },
+                    wasm_ir::Instruction::GlobalSet { id: self.get_global_index("_temp_ptr")? },
+
+                    // Store length at ptr: *ptr = size
+                    wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_temp_ptr")? },
                 
+                    wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_temp_i32")? },
+                    wasm_ir::Instruction::I32Store { align: 1, offset: 0 },
+
+                    // Increment _heap_ptr by (block_size + size)
+                    wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_heap_ptr")? },
+                    wasm_ir::Instruction::I32Const { value: *block_size as i32 },
+                
+                    wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_temp_i32")? },
+                    wasm_ir::Instruction::I32Add,
+                    wasm_ir::Instruction::I32Add,
+                    wasm_ir::Instruction::GlobalSet { id: self.get_global_index("_heap_ptr")? },
+                    
+                    // Return ptr + block_size (data start, skipping length)
+                    wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_temp_ptr")? },
+                    wasm_ir::Instruction::I32Const { value: *block_size as i32 },
+                    wasm_ir::Instruction::I32Add
+                ]);
 
 
-                // ptr = load _heap_ptr
-                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_heap_ptr")? });
-                instrs.push(wasm_ir::Instruction::GlobalSet { id: self.get_global_index("_temp_ptr")? });
                 
-                // Store length at ptr: *ptr = size
-                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_temp_ptr")? });
                 
-                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_temp_i32")? });
-                instrs.push(wasm_ir::Instruction::I32Store { align: 1, offset: 0 });
                 
-                // Increment _heap_ptr by (block_size + size)
-                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_heap_ptr")? });
-                instrs.push(wasm_ir::Instruction::I32Const { value: *block_size as i32 });
-                
-                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_temp_i32")? });
-                instrs.push(wasm_ir::Instruction::I32Add);
-                instrs.push(wasm_ir::Instruction::I32Add);
-                instrs.push(wasm_ir::Instruction::GlobalSet { id: self.get_global_index("_heap_ptr")? });
-                
-                // Return ptr + block_size (data start, skipping length)
-                instrs.push(wasm_ir::Instruction::GlobalGet { id: self.get_global_index("_temp_ptr")? });
-                instrs.push(wasm_ir::Instruction::I32Const { value: *block_size as i32 });
-                instrs.push(wasm_ir::Instruction::I32Add);
                 
                 Ok(instrs)
             }
@@ -646,7 +655,8 @@ impl Module {
             Type::I64 => wasm_ir::Type::ValueType { value_type: wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::I64 } },
             Type::F32 => wasm_ir::Type::ValueType { value_type: wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::F32 } },
             Type::F64 => wasm_ir::Type::ValueType { value_type: wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::F64 } },
-            Type::Buf(_) => wasm_ir::Type::ValueType { value_type: wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::I32 } }, 
+            Type::Buffer { kind: _ } => wasm_ir::Type::ValueType { value_type: wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::I32 } }, 
+            Type::Structure {  } => wasm_ir::Type::ValueType { value_type: wasm_ir::ValueType::NumType { num_type: wasm_ir::NumType::I32 } },
         }
     }
 
@@ -755,49 +765,51 @@ impl Module {
         }
     }
 
-    fn find_binop(&self, op: &BinOp, ty: &Type) -> Option<wasm_ir::Instruction> {
+    fn find_binop(&self, op: &BinOp, ty: &Type) -> Option<Vec<wasm_ir::Instruction>> {
         match (op, ty) {
-            (BinOp::Add, Type::I32) => Some(wasm_ir::Instruction::I32Add),
-            (BinOp::Sub, Type::I32) => Some(wasm_ir::Instruction::I32Sub),
-            (BinOp::Mul, Type::I32) => Some(wasm_ir::Instruction::I32Mul),
-            (BinOp::Div, Type::I32) => Some(wasm_ir::Instruction::I32DivS),
-            (BinOp::Mod, Type::I32) => Some(wasm_ir::Instruction::I32RemS),
-            (BinOp::Gt, Type::I32) => Some(wasm_ir::Instruction::I32Gt),
-            (BinOp::Ge, Type::I32) => Some(wasm_ir::Instruction::I32Ge),
-            (BinOp::Lt, Type::I32) => Some(wasm_ir::Instruction::I32Lt),
-            (BinOp::Le, Type::I32) => Some(wasm_ir::Instruction::I32Le), 
-            (BinOp::Eq, Type::I32) => Some(wasm_ir::Instruction::I32Eq),
+            (BinOp::Add, Type::I32) => Some(vec![wasm_ir::Instruction::I32Add]),
+            (BinOp::Sub, Type::I32) => Some(vec![wasm_ir::Instruction::I32Sub]),
+            (BinOp::Mul, Type::I32) => Some(vec![wasm_ir::Instruction::I32Mul]),
+            (BinOp::Div, Type::I32) => Some(vec![wasm_ir::Instruction::I32DivS]),
+            (BinOp::Mod, Type::I32) => Some(vec![wasm_ir::Instruction::I32RemS]),
+            (BinOp::Gt, Type::I32) => Some(vec![wasm_ir::Instruction::I32Gt]),
+            (BinOp::Ge, Type::I32) => Some(vec![wasm_ir::Instruction::I32Ge]),
+            (BinOp::Lt, Type::I32) => Some(vec![wasm_ir::Instruction::I32Lt]),
+            (BinOp::Le, Type::I32) => Some(vec![wasm_ir::Instruction::I32Le]), 
+            (BinOp::Eq, Type::I32) => Some(vec![wasm_ir::Instruction::I32Eq]),
+            (BinOp::Ne, Type::I32) => Some(vec![wasm_ir::Instruction::I32Eq, wasm_ir::Instruction::I32Eqz]),
             
-            (BinOp::Add, Type::I64) => Some(wasm_ir::Instruction::I64Add),
-            (BinOp::Sub, Type::I64) => Some(wasm_ir::Instruction::I64Sub),
-            (BinOp::Mul, Type::I64) => Some(wasm_ir::Instruction::I64Mul),
-            (BinOp::Div, Type::I64) => Some(wasm_ir::Instruction::I64DivS),
-            (BinOp::Mod, Type::I64) => Some(wasm_ir::Instruction::I64RemS),
-            (BinOp::Gt, Type::I64) => Some(wasm_ir::Instruction::I64Gt),
-            (BinOp::Ge, Type::I64) => Some(wasm_ir::Instruction::I64Ge),
-            (BinOp::Lt, Type::I64) => Some(wasm_ir::Instruction::I64Lt),
-            (BinOp::Le, Type::I64) => Some(wasm_ir::Instruction::I64Le), 
-            (BinOp::Eq, Type::I64) => Some(wasm_ir::Instruction::I64Eq),
+            (BinOp::Add, Type::I64) => Some(vec![wasm_ir::Instruction::I64Add]),
+            (BinOp::Sub, Type::I64) => Some(vec![wasm_ir::Instruction::I64Sub]),
+            (BinOp::Mul, Type::I64) => Some(vec![wasm_ir::Instruction::I64Mul]),
+            (BinOp::Div, Type::I64) => Some(vec![wasm_ir::Instruction::I64DivS]),
+            (BinOp::Mod, Type::I64) => Some(vec![wasm_ir::Instruction::I64RemS]),
+            (BinOp::Gt, Type::I64) => Some(vec![wasm_ir::Instruction::I64Gt]),
+            (BinOp::Ge, Type::I64) => Some(vec![wasm_ir::Instruction::I64Ge]),
+            (BinOp::Lt, Type::I64) => Some(vec![wasm_ir::Instruction::I64Lt]),
+            (BinOp::Le, Type::I64) => Some(vec![wasm_ir::Instruction::I64Le]), 
+            (BinOp::Eq, Type::I64) => Some(vec![wasm_ir::Instruction::I64Eq]),
+            (BinOp::Ne, Type::I64) => Some(vec![wasm_ir::Instruction::I64Eq, wasm_ir::Instruction::I64Eqz]),
 
-            (BinOp::Add, Type::F32) => Some(wasm_ir::Instruction::F32Add),
-            (BinOp::Sub, Type::F32) => Some(wasm_ir::Instruction::F32Sub),
-            (BinOp::Mul, Type::F32) => Some(wasm_ir::Instruction::F32Mul),
-            (BinOp::Div, Type::F32) => Some(wasm_ir::Instruction::F32Div),
-            (BinOp::Gt, Type::F32) => Some(wasm_ir::Instruction::F32Gt),
-            (BinOp::Ge, Type::F32) => Some(wasm_ir::Instruction::F32Ge),
-            (BinOp::Lt, Type::F32) => Some(wasm_ir::Instruction::F32Lt),
-            (BinOp::Le, Type::F32) => Some(wasm_ir::Instruction::F32Le), 
-            (BinOp::Eq, Type::F32) => Some(wasm_ir::Instruction::F32Eq),
+            (BinOp::Add, Type::F32) => Some(vec![wasm_ir::Instruction::F32Add]),
+            (BinOp::Sub, Type::F32) => Some(vec![wasm_ir::Instruction::F32Sub]),
+            (BinOp::Mul, Type::F32) => Some(vec![wasm_ir::Instruction::F32Mul]),
+            (BinOp::Div, Type::F32) => Some(vec![wasm_ir::Instruction::F32Div]),
+            (BinOp::Gt, Type::F32) => Some(vec![wasm_ir::Instruction::F32Gt]),
+            (BinOp::Ge, Type::F32) => Some(vec![wasm_ir::Instruction::F32Ge]),
+            (BinOp::Lt, Type::F32) => Some(vec![wasm_ir::Instruction::F32Lt]),
+            (BinOp::Le, Type::F32) => Some(vec![wasm_ir::Instruction::F32Le]), 
+            (BinOp::Eq, Type::F32) => Some(vec![wasm_ir::Instruction::F32Eq]),
 
-            (BinOp::Add, Type::F64) => Some(wasm_ir::Instruction::F64Add),
-            (BinOp::Sub, Type::F64) => Some(wasm_ir::Instruction::F64Sub),
-            (BinOp::Mul, Type::F64) => Some(wasm_ir::Instruction::F64Mul),
-            (BinOp::Div, Type::F64) => Some(wasm_ir::Instruction::F64Div),
-            (BinOp::Gt, Type::F64) => Some(wasm_ir::Instruction::F64Gt),
-            (BinOp::Ge, Type::F64) => Some(wasm_ir::Instruction::F64Ge),
-            (BinOp::Lt, Type::F64) => Some(wasm_ir::Instruction::F64Lt),
-            (BinOp::Le, Type::F64) => Some(wasm_ir::Instruction::F64Le), 
-            (BinOp::Eq, Type::F64) => Some(wasm_ir::Instruction::F64Eq),
+            (BinOp::Add, Type::F64) => Some(vec![wasm_ir::Instruction::F64Add]),
+            (BinOp::Sub, Type::F64) => Some(vec![wasm_ir::Instruction::F64Sub]),
+            (BinOp::Mul, Type::F64) => Some(vec![wasm_ir::Instruction::F64Mul]),
+            (BinOp::Div, Type::F64) => Some(vec![wasm_ir::Instruction::F64Div]),
+            (BinOp::Gt, Type::F64) => Some(vec![wasm_ir::Instruction::F64Gt]),
+            (BinOp::Ge, Type::F64) => Some(vec![wasm_ir::Instruction::F64Ge]),
+            (BinOp::Lt, Type::F64) => Some(vec![wasm_ir::Instruction::F64Lt]),
+            (BinOp::Le, Type::F64) => Some(vec![wasm_ir::Instruction::F64Le]), 
+            (BinOp::Eq, Type::F64) => Some(vec![wasm_ir::Instruction::F64Eq]),
 
             _ => None,
         }
@@ -819,23 +831,23 @@ impl Module {
         match (op, ty) {
             (Instruction::Load { .. }, Type::I32) => Some(wasm_ir::Instruction::I32Load { align: 1, offset: 0 }),
             (Instruction::Store { .. }, Type::I32) => Some(wasm_ir::Instruction::I32Store { align: 1, offset: 0 }),
-            (Instruction::Load { .. }, Type::Buf(inner)) if **inner == Type::I32 || matches!(**inner, Type::Buf(_)) => Some(wasm_ir::Instruction::I32Load { align: 1, offset: 0 }),
-            (Instruction::Store { .. }, Type::Buf(inner)) if **inner == Type::I32 || matches!(**inner, Type::Buf(_)) => Some(wasm_ir::Instruction::I32Store { align: 1, offset: 0 }),
+            (Instruction::Load { .. }, Type::Buffer { kind: inner }) if **inner == Type::I32 || matches!(**inner, Type::Buffer { kind: _  }) => Some(wasm_ir::Instruction::I32Load { align: 1, offset: 0 }),
+            (Instruction::Store { .. }, Type::Buffer { kind: inner })  if **inner == Type::I32 || matches!(**inner, Type::Buffer { kind: _ }) => Some(wasm_ir::Instruction::I32Store { align: 1, offset: 0 }),
 
             (Instruction::Load { .. }, Type::I64) => Some(wasm_ir::Instruction::I64Load { align: 1, offset: 0 }),
             (Instruction::Store { .. }, Type::I64) => Some(wasm_ir::Instruction::I64Store { align: 1, offset: 0 }),
-            (Instruction::Load { .. }, Type::Buf(inner)) if **inner == Type::I64 => Some(wasm_ir::Instruction::I64Load { align: 1, offset: 0 }),
-            (Instruction::Store { .. }, Type::Buf(inner)) if **inner == Type::I64 => Some(wasm_ir::Instruction::I64Store { align: 1, offset: 0 }),
+            (Instruction::Load { .. }, Type::Buffer { kind: inner })  if **inner == Type::I64 => Some(wasm_ir::Instruction::I64Load { align: 1, offset: 0 }),
+            (Instruction::Store { .. }, Type::Buffer { kind: inner })  if **inner == Type::I64 => Some(wasm_ir::Instruction::I64Store { align: 1, offset: 0 }),
             
             (Instruction::Load { .. }, Type::F32) => Some(wasm_ir::Instruction::F32Load { align: 1, offset: 0 }),
             (Instruction::Store { .. }, Type::F32) => Some(wasm_ir::Instruction::F32Store { align: 1, offset: 0 }),
-            (Instruction::Load { .. }, Type::Buf(inner)) if **inner == Type::F32 => Some(wasm_ir::Instruction::F32Load { align: 1, offset: 0 }),
-            (Instruction::Store { .. }, Type::Buf(inner)) if **inner == Type::F32 => Some(wasm_ir::Instruction::F32Store { align: 1, offset: 0 }),
+            (Instruction::Load { .. }, Type::Buffer { kind: inner })  if **inner == Type::F32 => Some(wasm_ir::Instruction::F32Load { align: 1, offset: 0 }),
+            (Instruction::Store { .. }, Type::Buffer { kind: inner })  if **inner == Type::F32 => Some(wasm_ir::Instruction::F32Store { align: 1, offset: 0 }),
             
             (Instruction::Load { .. }, Type::F64) => Some(wasm_ir::Instruction::F64Load { align: 1, offset: 0 }),
             (Instruction::Store { .. }, Type::F64) => Some(wasm_ir::Instruction::F64Store { align: 1, offset: 0 }),
-            (Instruction::Load { .. }, Type::Buf(inner)) if **inner == Type::F64 => Some(wasm_ir::Instruction::F64Load { align: 1, offset: 0 }),
-            (Instruction::Store { .. }, Type::Buf(inner)) if **inner == Type::F64 => Some(wasm_ir::Instruction::F64Store { align: 1, offset: 0 }),
+            (Instruction::Load { .. }, Type::Buffer { kind: inner })  if **inner == Type::F64 => Some(wasm_ir::Instruction::F64Load { align: 1, offset: 0 }),
+            (Instruction::Store { .. }, Type::Buffer { kind: inner }) if **inner == Type::F64 => Some(wasm_ir::Instruction::F64Store { align: 1, offset: 0 }),
             
             _ => None,
         }

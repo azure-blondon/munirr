@@ -304,7 +304,7 @@ impl TypeChecker {
                 
                 let result = match op {
                     BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => left_type,
-                    BinOp::Gt | BinOp::Lt | BinOp::Ge | BinOp::Le | BinOp::Eq => Type::I32,
+                    BinOp::Gt | BinOp::Lt | BinOp::Ge | BinOp::Le | BinOp::Eq | BinOp::Ne => Type::I32,
                     BinOp::Assign => left_type,
                 };
                 Some(result)

@@ -1,4 +1,20 @@
-export i32 main()
+i32 main()
 {
-    return 3;
+    # Arithmetic tests
+    expect_i32(1, 1);
+    expect_i32(2 + 2, 4);
+    expect_i32(2 * 5, 10);
+    expect_i32(16 / 3, 5);
+    expect_i32(8462 % 3, 2);
+    expect_i32(2 + 2 * 5, 12);
+    expect_i32((2 + 2) * 5, 20);
+
+    # Variable tests
+    i32 x = 5;
+    expect_i32(x, 5);
+
+    
+    
+
+    return 0;
 }

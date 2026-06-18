@@ -82,6 +82,7 @@ const SINGLE_CHAR_TOKENS: &[(&str, TokenKind)] = &[
     ("*", TokenKind::Operator(Operator::Mul)),
     ("/", TokenKind::Operator(Operator::Div)),
     ("%", TokenKind::Operator(Operator::Mod)),
+    (".", TokenKind::Operator(Operator::Dot)),
     ("(", TokenKind::Symbol(Symbol::LParen)),
     (")", TokenKind::Symbol(Symbol::RParen)),
     ("{", TokenKind::Symbol(Symbol::LBrace)),
@@ -90,7 +91,6 @@ const SINGLE_CHAR_TOKENS: &[(&str, TokenKind)] = &[
     ("]", TokenKind::Symbol(Symbol::RBracket)),
     (",", TokenKind::Symbol(Symbol::Comma)),
     (";", TokenKind::Symbol(Symbol::Semicolon)),
-    (".", TokenKind::Operator(Operator::Dot)),
 ];
 
 const KEYWORDS: &[(&str, TokenKind)] = &[
@@ -147,6 +147,14 @@ impl Lexer {
         let character: char = self.peek_char().unwrap();
 
         match character {
+            '/' if self.peek_nth_char(1) == Some('*') => {
+                while !self.is_at_end() && !(self.peek_char().unwrap() == '*' && self.peek_nth_char(1).unwrap() == '/') {
+                    self.position.advance(self.peek_char().unwrap());
+                }
+                self.position.advance('*');
+                self.position.advance('/');
+                self.next_token()
+            },
             c if Lexer::is_in(&c.to_string(), SINGLE_CHAR_TOKENS).is_some() => {
                 let token_kind: &TokenKind = Lexer::is_in(&character.to_string(), SINGLE_CHAR_TOKENS).unwrap();
                 self.position.advance(character);
@@ -199,6 +207,13 @@ impl Lexer {
                     Token { kind: TokenKind::Operator(Operator::Gt), position: self.position.clone() }
                 }
             },
+            '#' => {
+                while !self.is_at_end() && self.peek_char().unwrap() != '\n' {
+                    self.position.advance(self.peek_char().unwrap());
+                }
+                self.next_token()
+            },
+
 
             '\'' => {
                 self.read_char_literal()

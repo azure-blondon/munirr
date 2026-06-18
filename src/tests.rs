@@ -1,8 +1,7 @@
-// test suite for the compiler written in simple Rust, without using any testing framework
-
 use crate::Options;
-use crate::compile_muni_to_wasm;
 use crate::errors;
+use crate::run;
+
 
 pub fn run_all_tests() {
     let test_dirs = std::fs::read_dir("tests").expect("Failed to read tests directory");
@@ -44,11 +43,10 @@ pub fn run_all_tests() {
     println!("\n{} passed, {} failed, {} errors", passed, failed, errors);
 }
 
+
+
 fn run_test(test_dir_name: &str) -> Result<bool, Vec<errors::CompileError>> {
-    let muni_code = std::fs::read_to_string(format!("tests/{test_dir_name}/test.mun"))
-        .expect("Failed to read test.mun file");
-    let expected_wasm = std::fs::read(format!("tests/{test_dir_name}/expected.wasm"))
-        .expect("Failed to read expected.wasm file");
+
     
     let options = Options {
         show_tokens: false,
@@ -57,25 +55,20 @@ fn run_test(test_dir_name: &str) -> Result<bool, Vec<errors::CompileError>> {
         show_muni_ir: false,
         show_wasm_ir: false,
         force: false,
+        libs: vec!["src/lib/std-lib.mun", "src/lib/test-lib.mun", "src/lib/wasi-lib.mun"].into_iter().map(|x| x.to_string()).collect(),
     };
 
-    let compiled_wasm = compile_muni_to_wasm(muni_code, options)?;
+    let compiled_wasm = run::compile_muni_to_wasm(vec![format!("tests/{test_dir_name}/test.mun")], options)?;
     
-    if compiled_wasm == expected_wasm {
-        println!("Test {test_dir_name} passed!");
-        Ok(true)
-    } else {
-        println!("Test {test_dir_name} failed!");
-        println!("Expected {} bytes, got {} bytes", expected_wasm.len(), compiled_wasm.len());
-        // Show first difference
-        for (i, (expected, compiled)) in expected_wasm.iter().zip(compiled_wasm.iter()).enumerate() {
-            if expected != compiled {
-                println!("  First difference at byte {}: expected 0x{:02x}, got 0x{:02x}", i, expected, compiled);
-                break;
-            }
-        }
-        Ok(false)
+
+    let result= run::run_wasm(compiled_wasm);
+
+    if let Err(some) = result {
+        return Err(vec![errors::CompileError::GenericError(some.to_string(), errors::Position::new())]);
     }
+    let status = result.unwrap();
+
+    Ok(status == 0)
 }
 
 

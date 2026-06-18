@@ -444,6 +444,7 @@ impl Parser {
                 TokenKind::Operator(Operator::Ge) => muni_ast::BinOp::Ge,
                 TokenKind::Operator(Operator::Le) => muni_ast::BinOp::Le,
                 TokenKind::Operator(Operator::Eq) => muni_ast::BinOp::Eq,
+                TokenKind::Operator(Operator::Ne) => muni_ast::BinOp::Ne,
                 TokenKind::Operator(Operator::Assign) => muni_ast::BinOp::Assign,
                 _ => return Err(errors::CompileError::ParserError("Unknown operator".to_string(), position.clone())),
             };
@@ -625,7 +626,7 @@ impl Parser {
             TokenKind::Operator(Operator::Plus) | TokenKind::Operator(Operator::Minus) => Some(4),
             TokenKind::Operator(Operator::Lt) | TokenKind::Operator(Operator::Gt)
             | TokenKind::Operator(Operator::Le) | TokenKind::Operator(Operator::Ge) => Some(9),
-            TokenKind::Operator(Operator::Eq) => Some(10),
+            TokenKind::Operator(Operator::Eq) | TokenKind::Operator(Operator::Ne) => Some(10),
             TokenKind::Operator(Operator::Assign) => Some(14),
             _ => None,
         }

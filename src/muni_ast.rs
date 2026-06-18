@@ -103,6 +103,7 @@ pub enum BinOp {
     Ge,
     Le,
     Eq,
+    Ne,
     Assign,
 }
 
@@ -215,7 +216,7 @@ impl Program {
             Type::I64 => muni_ir::Type::I64,
             Type::F32 => muni_ir::Type::F32,
             Type::F64 => muni_ir::Type::F64,
-            Type::Buf(inner) => muni_ir::Type::Buf(Box::new(self.lower_type(inner))),
+            Type::Buf(inner) => muni_ir::Type::Buffer { kind: Box::new(self.lower_type(inner)) },
         }
     }
 
@@ -399,6 +400,7 @@ impl Program {
                     BinOp::Ge => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Ge, left: lowered_left, right: lowered_right },
                     BinOp::Le => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Le, left: lowered_left, right: lowered_right },
                     BinOp::Eq => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Eq, left: lowered_left, right: lowered_right },
+                    BinOp::Ne => muni_ir::Instruction::BinaryOp { op: muni_ir::BinOp::Ne, left: lowered_left, right: lowered_right },
                     BinOp::Assign => {
                         let name = match left.as_ref() {
                             TypedNode::Expression { expression: Expression::Identifier { name, position: _ }, result_type: _ } => name.clone(),

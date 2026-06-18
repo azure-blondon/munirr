@@ -26,12 +26,14 @@ impl Position {
 
 
 #[derive(Debug, PartialEq)]
+#[allow(dead_code)]
 pub enum CompileError {
     LexerError(String, Position),
     ParserError(String, Position),
     TypeCheckingError(String, Position),
     IRLoweringError(String, Position),
     WasmLoweringError(String, Position),
+    GenericError(String, Position),
 }
 
 impl std::fmt::Display for CompileError {
@@ -42,6 +44,7 @@ impl std::fmt::Display for CompileError {
             CompileError::TypeCheckingError(msg, pos) => write!(f, "{}:{} | Type checking error: {}", pos.line, pos.column, msg),
             CompileError::IRLoweringError(msg, pos) => write!(f, "{}:{} | IR lowering error: {}", pos.line, pos.column, msg),
             CompileError::WasmLoweringError(msg, pos) => write!(f, "{}:{} | Wasm lowering error: {}", pos.line, pos.column, msg),
+            CompileError::GenericError(msg, pos) => write!(f, "{}:{} | Error: {}", pos.line, pos.column, msg),
         }
     }
 }
