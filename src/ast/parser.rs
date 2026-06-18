@@ -1,6 +1,7 @@
-use crate::{errors, muni_ast};
-use crate::lexer::{Token, TokenKind, Operator, Keyword, Symbol};
 
+use crate::common::error::CompileError;
+use crate::lexer::definitions::{Token, TokenKind, Operator, Keyword, Symbol};
+use crate::ast::types::{Program, Module, Function, Global, HostImport, Type, TypedNode, Statement, Expression, Literal, BinOp, UnOp};
 
 pub struct Parser {
     tokens: Vec<Token>,
@@ -11,14 +12,14 @@ impl Parser {
     pub fn new() -> Self {
         Parser { tokens: Vec::new(), position: 0 }
     }
-    pub fn convert_tokens(&mut self, lexer: &mut crate::lexer::Lexer) -> Result<(), Vec<errors::CompileError>> {
+    pub fn convert_tokens(&mut self, lexer: &mut crate::lexer::scan::Scanner) -> Result<(), Vec<CompileError>> {
         let mut tokens: Vec<Token> = Vec::new();
-        let mut errors: Vec<errors::CompileError> = Vec::new();
+        let mut errors: Vec<CompileError> = Vec::new();
         loop {
             let token: Token = lexer.next_token();
             let is_eof: bool = matches!(token.kind, TokenKind::EoF);
             if matches!(token.kind, TokenKind::Error) {
-                errors.push(errors::CompileError::LexerError("Invalid token".to_string(), token.position.clone()));
+                errors.push(CompileError::LexerError("Invalid token".to_string(), token.position.clone()));
             }
             tokens.push(token);
             if is_eof {
@@ -47,73 +48,73 @@ impl Parser {
         }
     }
 
-    fn expect(&mut self, expected: &TokenKind) -> Result<(), errors::CompileError> {
+    fn expect(&mut self, expected: &TokenKind) -> Result<(), CompileError> {
         let token: &Token = self.nth_token(0);
         if token.kind == *expected {
             self.advance();
             Ok(())
         } else {
-            Err(errors::CompileError::ParserError(format!("Expected token {:?}, but found {:?}", expected, token.kind), token.position.clone()))
+            Err(CompileError::ParserError(format!("Expected token {:?}, but found {:?}", expected, token.kind), token.position.clone()))
         }
     }
 
-    pub fn parse_program(&mut self) -> Result<muni_ast::Program, Vec<errors::CompileError>> {
-        let mut errors: Vec<errors::CompileError> = Vec::new();
+    pub fn parse_program(&mut self) -> Result<Program, Vec<CompileError>> {
+        let mut errors: Vec<CompileError> = Vec::new();
         while self.nth_token(0).kind != TokenKind::EoF {
             match self.parse_module() {
-                Ok(module) => return Ok(muni_ast::Program { module }),
+                Ok(module) => return Ok(Program { module }),
                 Err(e) => errors.push(e),
             }
         }
         Err(errors)
     }
 
-    fn parse_module(&mut self) -> Result<muni_ast::Module, errors::CompileError> {
-        let mut functions: Vec<muni_ast::Function> = Vec::new();
-        let mut globals: Vec<muni_ast::Global> = Vec::new();
-        let mut host_imports: Vec<muni_ast::HostImport> = Vec::new();
+    fn parse_module(&mut self) -> Result<Module, CompileError> {
+        let mut functions: Vec<Function> = Vec::new();
+        let mut globals: Vec<Global> = Vec::new();
+        let mut host_imports: Vec<HostImport> = Vec::new();
         while self.nth_token(0).kind != TokenKind::EoF {
             match &self.nth_token(0).kind {
                 TokenKind::Keyword(Keyword::Export) => {self.advance(); self.parse_top_level_construct(&mut functions, &mut globals, &mut host_imports, true)?},
                 _ => self.parse_top_level_construct(&mut functions, &mut globals, &mut host_imports, false)?,
             }
         }
-        Ok(muni_ast::Module { functions, globals, types: Vec::new(), host_imports })
+        Ok(Module { functions, globals, types: Vec::new(), host_imports })
     }
 
-    fn parse_top_level_construct(&mut self, functions: &mut Vec<muni_ast::Function>, globals: &mut Vec<muni_ast::Global>, host_imports: &mut Vec<muni_ast::HostImport>, export: bool) -> Result<(), errors::CompileError> {
+    fn parse_top_level_construct(&mut self, functions: &mut Vec<Function>, globals: &mut Vec<Global>, host_imports: &mut Vec<HostImport>, export: bool) -> Result<(), CompileError> {
         match &self.nth_token(0).kind {
             TokenKind::Identifier(_) => self.parse_function(export).map(|f| functions.push(f))?,
             TokenKind::Keyword(Keyword::Global) => self.parse_global(export).map(|g| globals.push(g))?,
             TokenKind::Keyword(Keyword::Import) => self.parse_import().map(|h| host_imports.push(h))?,
-            _ => return Err(errors::CompileError::ParserError(format!("Unexpected token {:?}", self.nth_token(0).kind), self.nth_token(0).position.clone())),
+            _ => return Err(CompileError::ParserError(format!("Unexpected token {:?}", self.nth_token(0).kind), self.nth_token(0).position.clone())),
         }
         Ok(())
     }
 
     
 
-    fn parse_import(&mut self) -> Result<muni_ast::HostImport, errors::CompileError> {
+    fn parse_import(&mut self) -> Result<HostImport, CompileError> {
         // import a.b(i32) -> i32;
         // import a.b(i32); (void return type)
         self.expect(&TokenKind::Keyword(Keyword::Import))?;
         let module_name = match &self.nth_token(0).kind {
             TokenKind::Identifier(name) => name.clone(),
-            _ => return Err(errors::CompileError::ParserError(format!("Expected module name, but found {:?}", self.nth_token(0).kind), self.nth_token(0).position.clone())),
+            _ => return Err(CompileError::ParserError(format!("Expected module name, but found {:?}", self.nth_token(0).kind), self.nth_token(0).position.clone())),
         };
         self.advance();
         self.expect(&TokenKind::Operator(Operator::Dot))?;
         let func_name = match &self.nth_token(0).kind {
             TokenKind::Identifier(name) => name.clone(),
-            _ => return Err(errors::CompileError::ParserError(format!("Expected function name, but found {:?}", self.nth_token(0).kind), self.nth_token(0).position.clone())),
+            _ => return Err(CompileError::ParserError(format!("Expected function name, but found {:?}", self.nth_token(0).kind), self.nth_token(0).position.clone())),
         };
         self.advance();
         self.expect(&TokenKind::Symbol(Symbol::LParen))?;
-        let mut params: Vec<muni_ast::Type> = Vec::new();
+        let mut params: Vec<Type> = Vec::new();
         while self.nth_token(0).kind != TokenKind::Symbol(Symbol::RParen) {
             let param_type = self.parse_type()?;
             if param_type.is_none() {
-                return Err(errors::CompileError::ParserError(format!("Parameter type cannot be void"), self.nth_token(0).position.clone()));
+                return Err(CompileError::ParserError(format!("Parameter type cannot be void"), self.nth_token(0).position.clone()));
             }
             params.push(param_type.unwrap());
 
@@ -128,35 +129,35 @@ impl Parser {
         self.expect(&TokenKind::Symbol(Symbol::RParen))?;
         if self.nth_token(0).kind == TokenKind::Symbol(Symbol::Semicolon) {
             self.advance();
-            return Ok(muni_ast::HostImport { module: module_name, function: func_name, params, return_type: None, position: self.nth_token(0).position.clone() });
+            return Ok(HostImport { module: module_name, function: func_name, params, return_type: None, position: self.nth_token(0).position.clone() });
         }
         self.expect(&TokenKind::Operator(Operator::RArrow))?;
         let return_type = self.parse_type()?;
         self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
-        Ok(muni_ast::HostImport { module: module_name, function: func_name, params, return_type, position: self.nth_token(0).position.clone() })
+        Ok(HostImport { module: module_name, function: func_name, params, return_type, position: self.nth_token(0).position.clone() })
     }
 
-    fn parse_global(&mut self, export: bool) -> Result<muni_ast::Global, errors::CompileError> {
+    fn parse_global(&mut self, export: bool) -> Result<Global, CompileError> {
         self.expect(&TokenKind::Keyword(Keyword::Global))?;
 
         let ty = match &self.nth_token(0).kind {
             TokenKind::Identifier(_) => self.parse_type()?
-                        .ok_or_else(|| errors::CompileError::ParserError(format!("Global variable cannot have void type"), self.nth_token(0).position.clone()))?,
-            _ => return Err(errors::CompileError::ParserError(format!("Expected global variable type, but found {:?}", self.nth_token(0).kind), self.nth_token(0).position.clone())),
+                        .ok_or_else(|| CompileError::ParserError(format!("Global variable cannot have void type"), self.nth_token(0).position.clone()))?,
+            _ => return Err(CompileError::ParserError(format!("Expected global variable type, but found {:?}", self.nth_token(0).kind), self.nth_token(0).position.clone())),
         };
 
         let name: String = match &self.nth_token(0).kind {
             TokenKind::Identifier(name) => name.clone(),
-            _ => return Err(errors::CompileError::ParserError(format!("Expected global variable name, but found {:?}", self.nth_token(0).kind), self.nth_token(0).position.clone())),
+            _ => return Err(CompileError::ParserError(format!("Expected global variable name, but found {:?}", self.nth_token(0).kind), self.nth_token(0).position.clone())),
         };
         self.advance();
         self.expect(&TokenKind::Operator(Operator::Assign))?;
         let initializer = self.parse_expression()?;
         self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
-        Ok(muni_ast::Global { name, ty, init: initializer, mutable: false, export, position: self.nth_token(0).position.clone() })
+        Ok(Global { name, ty, init: initializer, mutable: false, export, position: self.nth_token(0).position.clone() })
     }
     
-    fn parse_function(&mut self, export: bool) -> Result<muni_ast::Function, errors::CompileError> {
+    fn parse_function(&mut self, export: bool) -> Result<Function, CompileError> {
         if let TokenKind::Identifier(_type_name) = &self.nth_token(0).kind {
             let return_type = self.parse_type()?;
             if let TokenKind::Identifier(func_name) = &self.nth_token(0).kind {
@@ -168,55 +169,55 @@ impl Parser {
                 self.expect(&TokenKind::Symbol(Symbol::LBrace))?;
                 let body = self.parse_block()?;
                 self.expect(&TokenKind::Symbol(Symbol::RBrace))?;
-                Ok(muni_ast::Function { name: func_name, params, return_type, body, export, position: self.nth_token(0).position.clone() })
+                Ok(Function { name: func_name, params, return_type, body, export, position: self.nth_token(0).position.clone() })
             } else {
-                Err(errors::CompileError::ParserError(format!("Expected function name, but found {:?}", self.nth_token(0).kind), self.nth_token(0).position.clone()))
+                Err(CompileError::ParserError(format!("Expected function name, but found {:?}", self.nth_token(0).kind), self.nth_token(0).position.clone()))
             }
 
         } else {
-            return Err(errors::CompileError::ParserError(format!("Expected function type, but found {:?}", self.nth_token(0).kind), self.nth_token(0).position.clone()));
+            return Err(CompileError::ParserError(format!("Expected function type, but found {:?}", self.nth_token(0).kind), self.nth_token(0).position.clone()));
         }
 
     }
 
 
-    fn parse_type(&mut self) -> Result<Option<muni_ast::Type>, errors::CompileError> {
+    fn parse_type(&mut self) -> Result<Option<Type>, CompileError> {
         match &self.nth_token(0).kind {
             TokenKind::Identifier(type_name) => {
-                let ty: Option<muni_ast::Type> = match type_name.as_str() {
-                    "i32" => Some(muni_ast::Type::I32),
-                    "i64" => Some(muni_ast::Type::I64),
-                    "f32" => Some(muni_ast::Type::F32),
-                    "f64" => Some(muni_ast::Type::F64),
+                let ty: Option<Type> = match type_name.as_str() {
+                    "i32" => Some(Type::I32),
+                    "i64" => Some(Type::I64),
+                    "f32" => Some(Type::F32),
+                    "f64" => Some(Type::F64),
                     "buf" => {
                         self.advance();
                         self.expect(&TokenKind::Operator(Operator::Lt))?;
-                        let inner_type = self.parse_type()?.ok_or_else(|| errors::CompileError::ParserError(format!("Buffer type cannot be void"), self.nth_token(0).position.clone()))?;
+                        let inner_type = self.parse_type()?.ok_or_else(|| CompileError::ParserError(format!("Buffer type cannot be void"), self.nth_token(0).position.clone()))?;
                         self.expect(&TokenKind::Operator(Operator::Gt))?;
-                        return Ok(Some(muni_ast::Type::Buf(Box::new(inner_type))))
+                        return Ok(Some(Type::Buf(Box::new(inner_type))))
                     },
                     "void" => None,
-                    _ => return Err(errors::CompileError::ParserError(format!("Unknown type '{}'", type_name), self.nth_token(0).position.clone())),
+                    _ => return Err(CompileError::ParserError(format!("Unknown type '{}'", type_name), self.nth_token(0).position.clone())),
                 };
                 self.advance();
                 Ok(ty)
             }
-            _ => Err(errors::CompileError::ParserError("Expected type".to_string(), self.nth_token(0).position.clone())),
+            _ => Err(CompileError::ParserError("Expected type".to_string(), self.nth_token(0).position.clone())),
         }
     }
 
-    fn parse_function_params(&mut self) -> Result<Vec<(String, muni_ast::Type)>, errors::CompileError> {
-        let mut params: Vec<(String, muni_ast::Type)> = Vec::new();
+    fn parse_function_params(&mut self) -> Result<Vec<(String, Type)>, CompileError> {
+        let mut params: Vec<(String, Type)> = Vec::new();
 
         while self.nth_token(0).kind != TokenKind::Symbol(Symbol::RParen) {
-            let param_type: Option<muni_ast::Type> = self.parse_type()?;
+            let param_type: Option<Type> = self.parse_type()?;
             if param_type.is_none() {
-                return Err(errors::CompileError::ParserError(format!("Parameter type cannot be void"), self.nth_token(0).position.clone()));
+                return Err(CompileError::ParserError(format!("Parameter type cannot be void"), self.nth_token(0).position.clone()));
             }
-            let param_type: muni_ast::Type = param_type.unwrap();
+            let param_type: Type = param_type.unwrap();
             let param_name: String = match &self.nth_token(0).kind {
                 TokenKind::Identifier(name)  => name.clone(),
-                _ => return Err(errors::CompileError::ParserError(format!("Expected parameter name, but found {:?}", self.nth_token(0).kind), self.nth_token(0).position.clone())),
+                _ => return Err(CompileError::ParserError(format!("Expected parameter name, but found {:?}", self.nth_token(0).kind), self.nth_token(0).position.clone())),
             };
             self.advance();
             params.push((param_name, param_type));
@@ -227,25 +228,25 @@ impl Parser {
         Ok(params)
     }
 
-    fn parse_block(&mut self) -> Result<Vec<muni_ast::TypedNode>, errors::CompileError> {
-        let mut instructions: Vec<muni_ast::TypedNode> = Vec::new();
+    fn parse_block(&mut self) -> Result<Vec<TypedNode>, CompileError> {
+        let mut instructions: Vec<TypedNode> = Vec::new();
         while self.nth_token(0).kind != TokenKind::Symbol(Symbol::RBrace) {
-            let instruction: muni_ast::TypedNode = self.parse_node(true)?;
+            let instruction: TypedNode = self.parse_node(true)?;
             instructions.push(instruction);
         }
         Ok(instructions)
     }
 
-    fn parse_node(&mut self, semi: bool) -> Result<muni_ast::TypedNode, errors::CompileError> {
+    fn parse_node(&mut self, semi: bool) -> Result<TypedNode, CompileError> {
         let position = self.nth_token(0).position.clone();
         match &self.nth_token(0).kind {
-            TokenKind::EoF => Err(errors::CompileError::ParserError("Unexpected end of file".to_string(), self.nth_token(0).position.clone())),
+            TokenKind::EoF => Err(CompileError::ParserError("Unexpected end of file".to_string(), self.nth_token(0).position.clone())),
             TokenKind::Keyword(Keyword::Loop) => {
                 self.expect(&TokenKind::Keyword(Keyword::Loop))?;
                 self.expect(&TokenKind::Symbol(Symbol::LBrace))?;
                 let body = self.parse_block()?;
                 self.expect(&TokenKind::Symbol(Symbol::RBrace))?;
-                Ok(muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Loop { body, position } })
+                Ok(TypedNode::Statement { statement: Statement::Loop { body, position } })
             },
             TokenKind::Keyword(Keyword::If) => self.parse_if(),
             TokenKind::Keyword(Keyword::Return) => self.parse_return(),
@@ -253,21 +254,21 @@ impl Parser {
                 self.advance();
                 let block = self.parse_block()?;
                 self.expect(&TokenKind::Symbol(Symbol::RBrace))?;
-                Ok(muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Block { body: block, position } })
+                Ok(TypedNode::Statement { statement: Statement::Block { body: block, position } })
             },
             TokenKind::Keyword(Keyword::Break) => {
                 self.expect(&TokenKind::Keyword(Keyword::Break))?;
                 if semi {
                     self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
                 }
-                Ok(muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Break { position } })
+                Ok(TypedNode::Statement { statement: Statement::Break { position } })
             },
             TokenKind::Keyword(Keyword::Continue) => {
                 self.expect(&TokenKind::Keyword(Keyword::Continue))?;
                 if semi {
                     self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
                 }
-                Ok(muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Continue { position } })
+                Ok(TypedNode::Statement { statement: Statement::Continue { position } })
             },
             TokenKind::Keyword(Keyword::While) => {
                 self.expect(&TokenKind::Keyword(Keyword::While))?;
@@ -277,14 +278,14 @@ impl Parser {
                 self.expect(&TokenKind::Symbol(Symbol::LBrace))?;
                 let body = self.parse_block()?;
                 self.expect(&TokenKind::Symbol(Symbol::RBrace))?;
-                Ok(muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Loop { body: vec![
-                        muni_ast::TypedNode::Statement { statement: muni_ast::Statement::If {
+                Ok(TypedNode::Statement { statement: Statement::Loop { body: vec![
+                        TypedNode::Statement { statement: Statement::If {
                             condition: Box::new(condition),
                             then_body: vec![
-                                muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Block { body: body.clone(), position: position.clone() } },
+                                TypedNode::Statement { statement: Statement::Block { body: body.clone(), position: position.clone() } },
                             ],
                             else_body: vec![
-                                muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Break { position: position.clone() } },
+                                TypedNode::Statement { statement: Statement::Break { position: position.clone() } },
                             ],
                             position: position.clone(),
                         } },
@@ -304,17 +305,17 @@ impl Parser {
                 let body = self.parse_block()?;
                 self.expect(&TokenKind::Symbol(Symbol::RBrace))?;
 
-                Ok(muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Block { body: vec![
+                Ok(TypedNode::Statement { statement: Statement::Block { body: vec![
                     init,
-                    muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Loop { body: vec![
-                        muni_ast::TypedNode::Statement { statement: muni_ast::Statement::If {
+                    TypedNode::Statement { statement: Statement::Loop { body: vec![
+                        TypedNode::Statement { statement: Statement::If {
                             condition: Box::new(condition),
                             then_body: vec![
-                                muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Block { body: body.clone(), position: position.clone() } },
+                                TypedNode::Statement { statement: Statement::Block { body: body.clone(), position: position.clone() } },
                                 update,
                             ],
                             else_body: vec![
-                                muni_ast::TypedNode::Statement { statement: muni_ast::Statement::Break { position: position.clone() } },
+                                TypedNode::Statement { statement: Statement::Break { position: position.clone() } },
                             ],
                             position: position.clone(),
                         } },
@@ -341,8 +342,8 @@ impl Parser {
                         if semi {
                             self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
                         }
-                        return Ok(muni_ast::TypedNode::Statement {
-                            statement: muni_ast::Statement::VariableDeclaration { name: var_name, ty, init: initializer, position },
+                        return Ok(TypedNode::Statement {
+                            statement: Statement::VariableDeclaration { name: var_name, ty, init: initializer, position },
                         });
                     } else {
                         self.position = saved_position;
@@ -352,15 +353,15 @@ impl Parser {
                 
                 
                 // otherwise, it's an expression statement
-                let expr: muni_ast::TypedNode = self.parse_expression()?;
+                let expr: TypedNode = self.parse_expression()?;
                 if semi {
                     self.expect(&TokenKind::Symbol(Symbol::Semicolon))?;
                 }
-                Ok(muni_ast::TypedNode::Statement {
-                    statement: muni_ast::Statement::Expression {
+                Ok(TypedNode::Statement {
+                    statement: Statement::Expression {
                         expression: match expr {
-                            muni_ast::TypedNode::Expression { expression, .. } => expression,
-                            _ => return Err(errors::CompileError::ParserError("Expected expression".to_string(), position)),
+                            TypedNode::Expression { expression, .. } => expression,
+                            _ => return Err(CompileError::ParserError("Expected expression".to_string(), position)),
                         },
                         position,
                     },
@@ -369,15 +370,15 @@ impl Parser {
         }
     }
 
-    fn parse_if(&mut self) -> Result<muni_ast::TypedNode, errors::CompileError> {
+    fn parse_if(&mut self) -> Result<TypedNode, CompileError> {
         let position = self.nth_token(0).position.clone();
         self.expect(&TokenKind::Keyword(Keyword::If))?;
-        let condition: Box<muni_ast::TypedNode> = Box::new(self.parse_expression()?);
+        let condition: Box<TypedNode> = Box::new(self.parse_expression()?);
         self.expect(&TokenKind::Symbol(Symbol::LBrace))?;
-        let then_body: Vec<muni_ast::TypedNode> = self.parse_block()?;
+        let then_body: Vec<TypedNode> = self.parse_block()?;
         self.expect(&TokenKind::Symbol(Symbol::RBrace))?;
         
-        let else_body: Vec<muni_ast::TypedNode> = if self.nth_token(0).kind == TokenKind::Keyword(Keyword::Else) {
+        let else_body: Vec<TypedNode> = if self.nth_token(0).kind == TokenKind::Keyword(Keyword::Else) {
             self.advance();
             self.expect(&TokenKind::Symbol(Symbol::LBrace))?;
             let body = self.parse_block()?;
@@ -387,12 +388,12 @@ impl Parser {
             Vec::new()
         };
         
-        Ok(muni_ast::TypedNode::Statement {
-            statement: muni_ast::Statement::If { condition, then_body, else_body, position },
+        Ok(TypedNode::Statement {
+            statement: Statement::If { condition, then_body, else_body, position },
         })
     }
 
-    fn parse_return(&mut self) -> Result<muni_ast::TypedNode, errors::CompileError> {
+    fn parse_return(&mut self) -> Result<TypedNode, CompileError> {
         let position = self.nth_token(0).position.clone();
         self.expect(&TokenKind::Keyword(Keyword::Return))?;
         let value = if self.nth_token(0).kind == TokenKind::Symbol(Symbol::Semicolon) {
@@ -404,16 +405,16 @@ impl Parser {
             self.advance();
         }
         
-        Ok(muni_ast::TypedNode::Statement {
-            statement: muni_ast::Statement::Return { value, position },
+        Ok(TypedNode::Statement {
+            statement: Statement::Return { value, position },
         })
     }
 
-    fn parse_expression(&mut self) -> Result<muni_ast::TypedNode, errors::CompileError> {
+    fn parse_expression(&mut self) -> Result<TypedNode, CompileError> {
         self.parse_binary_expression(100)
     }
 
-    fn parse_binary_expression(&mut self, max_precedence: i32) -> Result<muni_ast::TypedNode, errors::CompileError> {
+    fn parse_binary_expression(&mut self, max_precedence: i32) -> Result<TypedNode, CompileError> {
         let position = self.nth_token(0).position.clone();
         let mut left = self.parse_unary_expression()?;
         
@@ -434,22 +435,22 @@ impl Parser {
             let right = self.parse_binary_expression(next_min)?;
             
             let op = match &op_token_kind {
-                TokenKind::Operator(Operator::Plus) => muni_ast::BinOp::Add,
-                TokenKind::Operator(Operator::Minus) => muni_ast::BinOp::Sub,
-                TokenKind::Operator(Operator::Mul) => muni_ast::BinOp::Mul,
-                TokenKind::Operator(Operator::Div) => muni_ast::BinOp::Div,
-                TokenKind::Operator(Operator::Mod) => muni_ast::BinOp::Mod,
-                TokenKind::Operator(Operator::Gt) => muni_ast::BinOp::Gt,
-                TokenKind::Operator(Operator::Lt) => muni_ast::BinOp::Lt,
-                TokenKind::Operator(Operator::Ge) => muni_ast::BinOp::Ge,
-                TokenKind::Operator(Operator::Le) => muni_ast::BinOp::Le,
-                TokenKind::Operator(Operator::Eq) => muni_ast::BinOp::Eq,
-                TokenKind::Operator(Operator::Assign) => muni_ast::BinOp::Assign,
-                _ => return Err(errors::CompileError::ParserError("Unknown operator".to_string(), position.clone())),
+                TokenKind::Operator(Operator::Plus) => BinOp::Add,
+                TokenKind::Operator(Operator::Minus) => BinOp::Sub,
+                TokenKind::Operator(Operator::Mul) => BinOp::Mul,
+                TokenKind::Operator(Operator::Div) => BinOp::Div,
+                TokenKind::Operator(Operator::Mod) => BinOp::Mod,
+                TokenKind::Operator(Operator::Gt) => BinOp::Gt,
+                TokenKind::Operator(Operator::Lt) => BinOp::Lt,
+                TokenKind::Operator(Operator::Ge) => BinOp::Ge,
+                TokenKind::Operator(Operator::Le) => BinOp::Le,
+                TokenKind::Operator(Operator::Eq) => BinOp::Eq,
+                TokenKind::Operator(Operator::Assign) => BinOp::Assign,
+                _ => return Err(CompileError::ParserError("Unknown operator".to_string(), position.clone())),
             };
             
-            left = muni_ast::TypedNode::Expression {
-                expression: muni_ast::Expression::BinaryOp {
+            left = TypedNode::Expression {
+                expression: Expression::BinaryOp {
                     op,
                     left: Box::new(left),
                     right: Box::new(right),
@@ -462,15 +463,15 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_unary_expression(&mut self) -> Result<muni_ast::TypedNode, errors::CompileError> {
+    fn parse_unary_expression(&mut self) -> Result<TypedNode, CompileError> {
         let position = self.nth_token(0).position.clone();
         match &self.nth_token(0).kind {
             TokenKind::Operator(Operator::Minus) => {
                 self.advance();
                 let operand = self.parse_unary_expression()?;
-                Ok(muni_ast::TypedNode::Expression {
-                    expression: muni_ast::Expression::UnaryOp {
-                        op: muni_ast::UnOp::Neg,
+                Ok(TypedNode::Expression {
+                    expression: Expression::UnaryOp {
+                        op: UnOp::Neg,
                         operand: Box::new(operand),
                         position: position.clone(),
                     },
@@ -484,9 +485,9 @@ impl Parser {
             TokenKind::Operator(Operator::Not) => {
                 self.advance();
                 let operand = self.parse_unary_expression()?;
-                Ok(muni_ast::TypedNode::Expression {
-                    expression: muni_ast::Expression::UnaryOp {
-                        op: muni_ast::UnOp::Not,
+                Ok(TypedNode::Expression {
+                    expression: Expression::UnaryOp {
+                        op: UnOp::Not,
                         operand: Box::new(operand),
                         position: position
                     },
@@ -498,7 +499,7 @@ impl Parser {
     }
 
 
-    fn parse_postfix_expression(&mut self) -> Result<muni_ast::TypedNode, errors::CompileError> {
+    fn parse_postfix_expression(&mut self) -> Result<TypedNode, CompileError> {
         let position = self.nth_token(0).position.clone();
         let mut expr = self.parse_primary()?;
         
@@ -507,11 +508,11 @@ impl Parser {
                 TokenKind::Symbol(Symbol::LParen) => {
                     self.advance();
                     let func_name = match expr {
-                        muni_ast::TypedNode::Expression {
-                            expression: muni_ast::Expression::Identifier { name, position: _ },
+                        TypedNode::Expression {
+                            expression: Expression::Identifier { name, position: _ },
                             ..
                         } => name,
-                        _ => return Err(errors::CompileError::ParserError("Expected function name".to_string(), position.clone())),
+                        _ => return Err(CompileError::ParserError("Expected function name".to_string(), position.clone())),
                     };
                     
                     let mut args = Vec::new();
@@ -523,8 +524,8 @@ impl Parser {
                     }
                     self.expect(&TokenKind::Symbol(Symbol::RParen))?;
                     
-                    expr = muni_ast::TypedNode::Expression {
-                        expression: muni_ast::Expression::Call {
+                    expr = TypedNode::Expression {
+                        expression: Expression::Call {
                             function: func_name,
                             args,
                             position: position.clone(),
@@ -538,8 +539,8 @@ impl Parser {
                     self.expect(&TokenKind::Symbol(Symbol::RBracket))?;
                     
                     
-                    expr = muni_ast::TypedNode::Expression {
-                        expression: muni_ast::Expression::BufferAccess {
+                    expr = TypedNode::Expression {
+                        expression: Expression::BufferAccess {
                             buffer:  Box::new(expr),
                             index: Box::new(index),
                             position: position.clone(),
@@ -554,15 +555,15 @@ impl Parser {
         Ok(expr)
     }
 
-    fn parse_primary(&mut self) -> Result<muni_ast::TypedNode, errors::CompileError> {
+    fn parse_primary(&mut self) -> Result<TypedNode, CompileError> {
         let position = self.nth_token(0).position.clone();
         match &self.nth_token(0).kind.clone() {
             TokenKind::Integer(n) => {
                 let val = *n;
                 self.advance();
-                Ok(muni_ast::TypedNode::Expression {
-                    expression: muni_ast::Expression::Literal {
-                        value: muni_ast::Literal::Integer(val as i64),
+                Ok(TypedNode::Expression {
+                    expression: Expression::Literal {
+                        value: Literal::Integer(val as i64),
                         position,
                     },
                     result_type: None,
@@ -571,9 +572,9 @@ impl Parser {
             TokenKind::Float(f) => {
                 let val = *f;
                 self.advance();
-                Ok(muni_ast::TypedNode::Expression {
-                    expression: muni_ast::Expression::Literal {
-                        value: muni_ast::Literal::Float(val as f64),
+                Ok(TypedNode::Expression {
+                    expression: Expression::Literal {
+                        value: Literal::Float(val as f64),
                         position,
                     },
                     result_type: None,
@@ -582,9 +583,9 @@ impl Parser {
             TokenKind::Char(n) => {
                 let val = *n;
                 self.advance();
-                Ok(muni_ast::TypedNode::Expression {
-                    expression: muni_ast::Expression::Literal {
-                        value: muni_ast::Literal::Character(val),
+                Ok(TypedNode::Expression {
+                    expression: Expression::Literal {
+                        value: Literal::Character(val),
                         position,
                     },
                     result_type: None,
@@ -593,9 +594,9 @@ impl Parser {
             TokenKind::String(s) => {
                 let val = s.clone();
                 self.advance();
-                Ok(muni_ast::TypedNode::Expression {
-                    expression: muni_ast::Expression::Literal {
-                        value: muni_ast::Literal::String(val),
+                Ok(TypedNode::Expression {
+                    expression: Expression::Literal {
+                        value: Literal::String(val),
                         position,
                     },
                     result_type: None,
@@ -604,8 +605,8 @@ impl Parser {
             TokenKind::Identifier(name) => {
                 let ident = name.clone();
                 self.advance();
-                Ok(muni_ast::TypedNode::Expression {
-                    expression: muni_ast::Expression::Identifier { name: ident, position },
+                Ok(TypedNode::Expression {
+                    expression: Expression::Identifier { name: ident, position },
                     result_type: None,
                 })
             },
@@ -615,7 +616,7 @@ impl Parser {
                 self.expect(&TokenKind::Symbol(Symbol::RParen))?;
                 Ok(expr)
             },
-            _ => Err(errors::CompileError::ParserError(format!("Unexpected token: {:?}", self.nth_token(0).kind), position)),
+            _ => Err(CompileError::ParserError(format!("Unexpected token: {:?}", self.nth_token(0).kind), position)),
         }
     }
 

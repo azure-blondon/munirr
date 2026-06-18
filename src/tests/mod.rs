@@ -2,7 +2,7 @@
 
 use crate::Options;
 use crate::compile_muni_to_wasm;
-use crate::errors;
+use crate::common::error::CompileError;
 
 pub fn run_all_tests() {
     let test_dirs = std::fs::read_dir("tests").expect("Failed to read tests directory");
@@ -44,7 +44,7 @@ pub fn run_all_tests() {
     println!("\n{} passed, {} failed, {} errors", passed, failed, errors);
 }
 
-fn run_test(test_dir_name: &str) -> Result<bool, Vec<errors::CompileError>> {
+fn run_test(test_dir_name: &str) -> Result<bool, Vec<CompileError>> {
     let muni_code = std::fs::read_to_string(format!("tests/{test_dir_name}/test.mun"))
         .expect("Failed to read test.mun file");
     let expected_wasm = std::fs::read(format!("tests/{test_dir_name}/expected.wasm"))

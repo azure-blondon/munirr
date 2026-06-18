@@ -1,138 +1,12 @@
-use core::panic;
 
-use crate::{muni_ir, errors};
-use rand;
-
-
-#[derive(Debug)]
-pub struct Program {
-    pub module: Module,
-}
-
-#[derive(Debug)]
-pub struct Module {
-    pub types: Vec<TypeDef>,
-    pub functions: Vec<Function>,
-    pub host_imports: Vec<HostImport>,
-    pub globals: Vec<Global>,
-}
-
-#[derive(Debug)]
-pub struct Function {
-    pub name: String,
-    pub params: Vec<(String, Type)>,
-    pub return_type: Option<Type>,
-    pub body: Vec<TypedNode>,
-    pub export: bool,
-    pub position: errors::Position,
-}
-
-#[derive(Debug)]
-pub struct Global {
-    pub name: String,
-    pub ty: Type,
-    pub mutable: bool,
-    pub init: TypedNode,
-    pub export: bool,
-    pub position: errors::Position,
-}
-
-#[derive(Debug)]
-pub struct HostImport {
-    pub module: String,
-    pub function: String,
-    pub params: Vec<Type>,
-    pub return_type: Option<Type>,
-    pub position: errors::Position,
-}
-
-#[derive(Debug)]
-#[allow(dead_code)]
-pub enum TypeDef {
-    Alias { name: String, ty: Type, position: errors::Position },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum Type {
-    I32,
-    I64,
-    F32,
-    F64,
-    Buf(Box<Type>),
-}
-
-
-#[derive(Debug, Clone)]
-pub enum TypedNode {
-    Statement { statement: Statement },
-    Expression { expression: Expression, result_type: Option<Type> },
-}
-
-
-#[derive(Debug, Clone)]
-pub enum Statement {
-    If { condition: Box<TypedNode>, then_body: Vec<TypedNode>, else_body: Vec<TypedNode>, position: errors::Position },
-    Return { value: Option<Box<TypedNode>>, position: errors::Position },
-    Expression { expression: Expression, position: errors::Position },
-    VariableDeclaration { name: String, ty: Type, init: Option<Box<TypedNode>>, position: errors::Position },
-    Block { body: Vec<TypedNode>, position: errors::Position },
-    Loop { body: Vec<TypedNode>, position: errors::Position },
-    Break { position: errors::Position },
-    Continue { position: errors::Position },
-}
-
-#[derive(Debug, Clone)]
-pub enum Expression {
-    BinaryOp { op: BinOp, left: Box<TypedNode>, right: Box<TypedNode>, position: errors::Position },
-    UnaryOp { op: UnOp, operand: Box<TypedNode>, position: errors::Position },
-    Literal { value: Literal, position: errors::Position },
-    Identifier { name: String, position: errors::Position },
-    Call { function: String, args: Vec<TypedNode>, position: errors::Position },
-    BufferAccess { buffer: Box<TypedNode>, index: Box<TypedNode>, position: errors::Position },
-}
-
-#[derive(Debug, Clone)]
-pub enum BinOp {
-    Add,
-    Sub,
-    Mul,
-    Div,
-    Mod,
-    Gt,
-    Lt,
-    Ge,
-    Le,
-    Eq,
-    Assign,
-}
-
-#[derive(Debug, Clone)]
-pub enum UnOp {
-    Neg,
-    Not,
-}
-
-#[derive(Debug, Clone)]
-pub enum Literal {
-    Integer(i64),
-    Float(f64),
-    Character(i32),
-    String(String),
-}
-
-
-#[derive(Debug, Clone)]
-enum BlockType {
-    Loop,
-    If,
-    Block,
-}
-
-
+use crate::common::position::Position;
+use crate::common::error::CompileError;
+use crate::ast::types::*;
+use crate::irs::muni_ir;
 
 
 impl Program {
-    pub fn lower(&self) -> Result<muni_ir::Module, Vec<errors::CompileError>> {
+    pub fn lower(&self) -> Result<muni_ir::Module, Vec<CompileError>> {
         let module = &self.module;
         let mut errors = Vec::new();
         let mut ir_functions = Vec::new();
@@ -219,7 +93,7 @@ impl Program {
         }
     }
 
-    fn lower_instructions(&self, instructions: &[TypedNode], block_stack: Vec<BlockType>) -> Result<Vec<muni_ir::TypedInstruction>, errors::CompileError> {
+    fn lower_instructions(&self, instructions: &[TypedNode], block_stack: Vec<BlockType>) -> Result<Vec<muni_ir::TypedInstruction>, CompileError> {
         let mut ir_instructions = Vec::new();
         for instr in instructions {
             ir_instructions.push(self.lower_instruction(instr, block_stack.clone())?);
@@ -227,7 +101,7 @@ impl Program {
         Ok(ir_instructions)
     }
 
-    fn lower_instruction(&self, instruction: &TypedNode, mut block_stack: Vec<BlockType>) -> Result<muni_ir::TypedInstruction, errors::CompileError> {
+    fn lower_instruction(&self, instruction: &TypedNode, mut block_stack: Vec<BlockType>) -> Result<muni_ir::TypedInstruction, CompileError> {
         let mut instr_pos = match instruction {
             TypedNode::Statement { statement } => statement.position(),
             TypedNode::Expression { expression, result_type: _ } => expression.position(),
@@ -375,7 +249,7 @@ impl Program {
     
     }
 
-    fn lower_expression(&self, expression: &Expression, expr_type: &Option<Type>) -> Result<muni_ir::Instruction, errors::CompileError> {
+    fn lower_expression(&self, expression: &Expression, expr_type: &Option<Type>) -> Result<muni_ir::Instruction, CompileError> {
         match expression {
             Expression::UnaryOp { op, operand, position: _ } => {
                 let lowered_operand = Box::new(self.lower_instruction(operand, Vec::new())?);
@@ -437,7 +311,7 @@ impl Program {
                                 });
                                 return Ok(muni_ir::Instruction::Store { address, value: lowered_right });
                             }
-                            _ => return Err(errors::CompileError::IRLoweringError("Left-hand side of assignment must be an identifier".to_string(), *position)),
+                            _ => return Err(CompileError::IRLoweringError("Left-hand side of assignment must be an identifier".to_string(), *position)),
                         };
                         muni_ir::Instruction::VarSet { name: name, value: lowered_right }
                     }
@@ -552,7 +426,7 @@ impl Program {
                 match function.as_str() {
                     "alloc_i32" => {
                         if args.len() != 1 {
-                            return Err(errors::CompileError::IRLoweringError("alloc function must have exactly one argument".to_string(), *position));
+                            return Err(CompileError::IRLoweringError("alloc function must have exactly one argument".to_string(), *position));
                         }
                         let amount = Box::new(self.lower_instruction(&args[0], Vec::new())?);
                         return Ok(muni_ir::Instruction::Alloc { block_size: 4, amount });
@@ -776,7 +650,7 @@ impl Module {
 
 
 impl Statement {
-    pub fn position(&self) -> errors::Position {
+    pub fn position(&self) -> Position {
         match self {
             Statement::If { position, .. } => *position,
             Statement::Return { position, .. } => *position,
@@ -791,7 +665,7 @@ impl Statement {
 }
 
 impl Expression {
-    pub fn position(&self) -> errors::Position {
+    pub fn position(&self) -> Position {
         match self {
             Expression::BinaryOp { position, .. } => *position,
             Expression::UnaryOp { position, .. } => *position,

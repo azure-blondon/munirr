@@ -1,7 +1,8 @@
 use std::vec;
 
-use crate::wasm_ir::{self, ExportDescriptor};
-use crate::errors::{self, Position};
+use crate::irs::wasm_ir::{self, ExportDescriptor};
+use crate::common::position::Position;
+use crate::common::error::CompileError;
 
 #[derive(Debug)]
 pub struct Module {
@@ -117,7 +118,7 @@ pub enum Value {
 
 
 impl Module {
-    pub fn lower(&mut self) -> Result<wasm_ir::Module, Vec<errors::CompileError>> {
+    pub fn lower(&mut self) -> Result<wasm_ir::Module, Vec<CompileError>> {
         let mut module = wasm_ir::Module {
             types: Vec::new(),
             globals: Vec::new(),
@@ -299,7 +300,7 @@ impl Module {
                         continue;
                     },
                     None => return Err(vec![
-                        errors::CompileError::IRLoweringError(format!("Function not found: {}", function), Position { line: 0, column: 0, index: 0 })
+                        CompileError::IRLoweringError(format!("Function not found: {}", function), Position { line: 0, column: 0, index: 0 })
                     ]),
                 }
             };
@@ -362,7 +363,7 @@ impl Module {
         current_function_index: Option<usize>,
         label_stack: &mut Vec<(String, u32)>,
         next_label_id: &mut u32,
-    ) -> Result<Vec<wasm_ir::Instruction>, Vec<errors::CompileError>> {
+    ) -> Result<Vec<wasm_ir::Instruction>, Vec<CompileError>> {
         match &instruction.instruction {
             Instruction::Const { value } => Ok(vec![self.lower_value(&value)]),
             Instruction::UnaryOp { op, operand } => {
@@ -370,12 +371,12 @@ impl Module {
                 let operand_type = operand.result_type.as_ref();
                 if operand_type.is_none() {
                     return Err(vec![
-                        errors::CompileError::IRLoweringError("Unary operation operand must have a type".to_string(), instruction.position)
+                        CompileError::IRLoweringError("Unary operation operand must have a type".to_string(), instruction.position)
                     ]);
                 }
                 let operand_type = operand_type.unwrap();
                 let unop_instrs = self.find_unop(op, operand_type).ok_or(vec![
-                    errors::CompileError::IRLoweringError(format!("Unsupported unary operation: {:?} with type {:?}", op, instruction.result_type), instruction.position)
+                    CompileError::IRLoweringError(format!("Unsupported unary operation: {:?} with type {:?}", op, instruction.result_type), instruction.position)
                 ])?;
                 instrs.extend(unop_instrs);
                 Ok(instrs)
@@ -388,13 +389,13 @@ impl Module {
                 let result_type = instruction.result_type.as_ref();
                 if result_type.is_none() {
                     return Err(vec![
-                        errors::CompileError::IRLoweringError("Binary operation must have a result type".to_string(), instruction.position)
+                        CompileError::IRLoweringError("Binary operation must have a result type".to_string(), instruction.position)
                     ]);
                 }
                 let left_type = left.result_type.as_ref();
                 if left_type.is_none() {
                     return Err(vec![
-                        errors::CompileError::IRLoweringError("Binary operation left operand must have a type".to_string(), instruction.position)
+                        CompileError::IRLoweringError("Binary operation left operand must have a type".to_string(), instruction.position)
                     ]);
                 }
                 let mut left_type = left_type.unwrap();
@@ -408,7 +409,7 @@ impl Module {
                     instrs.push(binop_instr);
                 } else {
                     return Err(vec![
-                        errors::CompileError::IRLoweringError(format!("Unsupported binary operation: {:?} with type {:?}", op, left_type), instruction.position)
+                        CompileError::IRLoweringError(format!("Unsupported binary operation: {:?} with type {:?}", op, left_type), instruction.position)
                     ]);
                 }
                 Ok(instrs)
@@ -419,7 +420,7 @@ impl Module {
                     instrs.push(load_instr);
                 } else {
                     return Err(vec![
-                        errors::CompileError::IRLoweringError(format!("Unsupported load operation with type {:?}", instruction.result_type), instruction.position)
+                        CompileError::IRLoweringError(format!("Unsupported load operation with type {:?}", instruction.result_type), instruction.position)
                     ]);
                 }
                 Ok(instrs)
@@ -428,7 +429,7 @@ impl Module {
                 let value_type = value.result_type.as_ref();
                 if value_type.is_none() {
                     return Err(vec![
-                        errors::CompileError::IRLoweringError("Store operation value must have a type".to_string(), instruction.position)
+                        CompileError::IRLoweringError("Store operation value must have a type".to_string(), instruction.position)
                     ]);
                 }
 
@@ -456,7 +457,7 @@ impl Module {
                     instrs.push(store_instr);
                 } else {
                     return Err(vec![
-                        errors::CompileError::IRLoweringError(format!("Unsupported store operation {:?} with type {:?}", instruction.instruction, instruction.result_type), instruction.position)
+                        CompileError::IRLoweringError(format!("Unsupported store operation {:?} with type {:?}", instruction.instruction, instruction.result_type), instruction.position)
                     ]);
                 }
                 // leave the value on the stack
@@ -679,8 +680,8 @@ impl Module {
         names
     }
 
-    fn get_global_index(&self, name: &str) -> Result<u32, Vec<errors::CompileError>> {
-        self.globals.iter().position(|g| g.name == name).map(|idx| idx as u32).ok_or(vec![errors::CompileError::IRLoweringError(format!("Global not found: {}", name), Position { line: 0, column: 0, index: 0 })])
+    fn get_global_index(&self, name: &str) -> Result<u32, Vec<CompileError>> {
+        self.globals.iter().position(|g| g.name == name).map(|idx| idx as u32).ok_or(vec![CompileError::IRLoweringError(format!("Global not found: {}", name), Position { line: 0, column: 0, index: 0 })])
     }
 
     fn does_it_return(&self, body: &[TypedInstruction]) -> bool {

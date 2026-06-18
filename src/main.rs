@@ -1,17 +1,16 @@
 use wasmtime::{Engine, Linker, Store};
 use wasmtime_wasi::{WasiCtxBuilder};
-mod wasm_ir;use wasmtime_wasi::p1::{self, WasiP1Ctx};
+use wasmtime_wasi::p1::{self, WasiP1Ctx};
 
-mod muni_ir;
-mod muni_ast;
-mod parser;
-mod type_checker;
+
+mod common;
+mod irs;
 mod lexer;
-mod errors;
-
+mod ast;
 mod tests;
 
-use wasm_ir::Emittable;
+use crate::common::error::CompileError;
+use irs::wasm_ir::Emittable;
 
 pub struct Options {
     pub show_tokens: bool,
@@ -24,9 +23,9 @@ pub struct Options {
 
 
 
-pub fn compile_muni_to_wasm(muni_code: String, options: Options) -> Result<Vec<u8>, Vec<errors::CompileError>> {
+pub fn compile_muni_to_wasm(muni_code: String, options: Options) -> Result<Vec<u8>, Vec<CompileError>> {
     
-    let mut lexer = lexer::Lexer::new(muni_code);
+    let mut lexer = lexer::scan::Scanner::new(muni_code);
 
     if options.show_tokens {
         let mut tmp_lexer = lexer.clone();
@@ -34,13 +33,13 @@ pub fn compile_muni_to_wasm(muni_code: String, options: Options) -> Result<Vec<u
         loop {
             let token = tmp_lexer.next_token();
             println!("{:?}", token);
-            if token.kind == lexer::TokenKind::EoF {
+            if token.kind == lexer::definitions::TokenKind::EoF {
                 break;
             }
         }
     }
 
-    let mut parser = parser::Parser::new();
+    let mut parser = ast::parser::Parser::new();
     parser.convert_tokens(&mut lexer)?;
 
     
@@ -52,7 +51,7 @@ pub fn compile_muni_to_wasm(muni_code: String, options: Options) -> Result<Vec<u
         ast.display();
     }
     if !options.force {
-        let mut type_checker = type_checker::TypeChecker::new();
+        let mut type_checker = ast::type_checker::TypeChecker::new();
         type_checker.check_ast(&mut ast)?;
     }
     
