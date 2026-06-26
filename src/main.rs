@@ -8,9 +8,10 @@ mod irs;
 mod lexer;
 mod ast;
 mod tests;
+mod lowerings;
 
 use crate::common::error::CompileError;
-use irs::wasm_ir::Emittable;
+use lowerings::wasm_to_bytes::Emittable;
 
 pub struct Options {
     pub show_tokens: bool,
