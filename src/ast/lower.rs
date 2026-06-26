@@ -1,7 +1,7 @@
 
 use crate::common::position::Position;
 use crate::common::error::CompileError;
-use crate::ast::types::*;
+use crate::ast::nodes::*;
 use crate::irs::muni_ir;
 
 

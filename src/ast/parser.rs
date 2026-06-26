@@ -1,7 +1,7 @@
 
 use crate::common::error::CompileError;
 use crate::lexer::definitions::{Token, TokenKind, Operator, Keyword, Symbol};
-use crate::ast::types::{Program, Module, Function, Global, HostImport, Type, TypedNode, Statement, Expression, Literal, BinOp, UnOp};
+use crate::ast::nodes::{Program, Module, Function, Global, HostImport, Type, TypedNode, Statement, Expression, Literal, BinOp, UnOp};
 
 pub struct Parser {
     tokens: Vec<Token>,

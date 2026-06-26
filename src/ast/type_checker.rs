@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use crate::common::{error::CompileError, position::Position};
-use crate::ast::types::{Program, Global, Type, TypedNode, Statement, Expression, Literal, BinOp};
+use crate::ast::nodes::{Program, Global, Type, TypedNode, Statement, Expression, Literal, BinOp};
 
 pub struct TypeChecker {
     current_function: Option<String>,
